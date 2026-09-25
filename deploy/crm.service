@@ -1,0 +1,36 @@
+# crm.cli enterprise server — systemd unit (spec/enterprise.md, P1)
+#
+# Install:
+#   1. Copy the project (with node_modules + dist) to /opt/crm
+#      (bun install && bun run build there).
+#   2. Create a dedicated system user:  sudo useradd -r -d /opt/crm-home crm
+#   3. sudo cp deploy/crm.service /etc/systemd/system/
+#   4. sudo systemctl daemon-reload && sudo systemctl enable --now crm
+#   5. sudo journalctl -u crm -f     # first boot prints BOOTSTRAP-CODE=...
+#
+# The server binds 127.0.0.1 by default — put a TLS reverse proxy
+# (Caddy/nginx) in front for network access, or set host/port in
+# /opt/crm-home/.crm/config.toml under [serve].
+
+[Unit]
+Description=crm.cli enterprise server (NDJSON RPC over TLS)
+After=network.target
+
+[Service]
+Type=simple
+User=crm
+WorkingDirectory=/opt/crm
+ExecStart=/usr/local/bin/bun /opt/crm/dist/cli.js serve
+Restart=on-failure
+RestartSec=2
+
+# --- Hardening -------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/crm-home
+# --- Hardening end ---------------------------------------------------------
+
+[Install]
+WantedBy=multi-user.target

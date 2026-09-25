@@ -54,6 +54,54 @@ export const activities = sqliteTable('activities', {
   created_at: text('created_at').notNull(),
 })
 
+// ── Enterprise (spec/enterprise.md P1) ──
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  username: text('username').notNull().unique(),
+  display_name: text('display_name'),
+  email: text('email'),
+  auth_source: text('auth_source').notNull().default('local'),
+  password_hash: text('password_hash'),
+  ldap_dn: text('ldap_dn'),
+  role: text('role').notNull().default('reader'),
+  failed_attempts: integer('failed_attempts').notNull().default(0),
+  locked_until: text('locked_until'),
+  created_at: text('created_at').notNull(),
+  disabled_at: text('disabled_at'),
+})
+
+export const tokens = sqliteTable('tokens', {
+  id: text('id').primaryKey(),
+  user_id: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  token_hash: text('token_hash').notNull().unique(),
+  scopes: text('scopes').notNull().default('[]'),
+  created_at: text('created_at').notNull(),
+  expires_at: text('expires_at'),
+  last_used_at: text('last_used_at'),
+})
+
+export const auditLog = sqliteTable('audit_log', {
+  seq: integer('seq').primaryKey({ autoIncrement: true }),
+  at: text('at').notNull(),
+  actor_id: text('actor_id').notNull(),
+  actor_name: text('actor_name').notNull(),
+  action: text('action').notNull(),
+  entity_type: text('entity_type'),
+  entity_id: text('entity_id'),
+  before_json: text('before_json'),
+  after_json: text('after_json'),
+  source: text('source').notNull(),
+  ip: text('ip'),
+})
+
+export type AuditRow = InferSelectModel<typeof auditLog>
+export type User = InferSelectModel<typeof users>
+export type ServiceToken = InferSelectModel<typeof tokens>
+
 export type Contact = InferSelectModel<typeof contacts>
 export type Company = InferSelectModel<typeof companies>
 export type Deal = InferSelectModel<typeof deals>

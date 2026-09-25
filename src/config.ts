@@ -6,6 +6,11 @@ import { dirname, join, resolve } from 'node:path'
 import { parse as parseTOML } from 'toml'
 
 export interface CRMConfig {
+  auth: {
+    lockout_threshold: number
+    lockout_minutes: number
+    password_min_length: number
+  }
   database: { path: string }
   defaults: { format: string }
   hooks: Record<string, string>
@@ -24,6 +29,7 @@ export interface CRMConfig {
   }
   phone: { default_country?: string; display: string }
   pipeline: { stages: string[]; won_stage: string; lost_stage: string }
+  serve: { port: number; host: string; cert: string; key: string }
 }
 
 export const SEARCH_MODEL = 'mxbai-embed-xsmall-v1'
@@ -47,6 +53,12 @@ function defaultConfig(): CRMConfig {
     },
     defaults: { format: 'table' },
     phone: { display: 'international' },
+    serve: { port: 8443, host: '127.0.0.1', cert: '', key: '' },
+    auth: {
+      lockout_threshold: 5,
+      lockout_minutes: 15,
+      password_min_length: 12,
+    },
     hooks: {},
     mount: {
       default_path: join(homedir(), 'crm'),
@@ -116,6 +128,29 @@ function mergeConfig(
   }
   if (override.mount) {
     result.mount = { ...result.mount, ...override.mount }
+  }
+  if (override.serve) {
+    result.serve = {
+      ...result.serve,
+      ...(override.serve.port ? { port: override.serve.port } : {}),
+      ...(override.serve.host ? { host: override.serve.host } : {}),
+      ...(override.serve.cert ? { cert: override.serve.cert } : {}),
+      ...(override.serve.key ? { key: override.serve.key } : {}),
+    }
+  }
+  if (override.auth) {
+    result.auth = {
+      ...result.auth,
+      ...(override.auth.lockout_threshold
+        ? { lockout_threshold: override.auth.lockout_threshold }
+        : {}),
+      ...(override.auth.lockout_minutes
+        ? { lockout_minutes: override.auth.lockout_minutes }
+        : {}),
+      ...(override.auth.password_min_length
+        ? { password_min_length: override.auth.password_min_length }
+        : {}),
+    }
   }
   return result
 }

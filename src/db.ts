@@ -76,6 +76,50 @@ CREATE TABLE IF NOT EXISTS activities (
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
   entity_type, entity_id, content
 );
+
+-- Enterprise (spec/enterprise.md P1): identity, tokens, audit.
+-- users is the authority for role and token. password_hash is argon2id.
+-- tokens stores a SHA-256 hash only (raw token is shown exactly once).
+-- audit_log is append-only in v1 (hash chain lands in P4).
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  display_name TEXT,
+  email TEXT,
+  auth_source TEXT NOT NULL DEFAULT 'local',
+  password_hash TEXT,
+  ldap_dn TEXT,
+  role TEXT NOT NULL DEFAULT 'reader',
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,
+  created_at TEXT NOT NULL,
+  disabled_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tokens (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  scopes TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL,
+  expires_at TEXT,
+  last_used_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  actor_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  entity_type TEXT,
+  entity_id TEXT,
+  before_json TEXT,
+  after_json TEXT,
+  source TEXT NOT NULL,
+  ip TEXT
+);
 `
 
 export async function openDB(dbPath: string): Promise<DB> {

@@ -15,6 +15,17 @@ import { slugify } from '../fuse-json'
 export const socketsDir = join(homedir(), '.crm', 'sockets')
 export const mountsDir = join(homedir(), '.crm', 'mounts')
 
+/** Directory for the server's TLS material (~/.crm/certs, 0700). */
+export const certsDir = join(homedir(), '.crm', 'certs')
+
+/**
+ * Saved server credentials (~/.crm/credentials, 0600).
+ * Written by `crm login`: { server, username, token }.
+ */
+export function credentialsPath(): string {
+  return join(homedir(), '.crm', 'credentials')
+}
+
 export function socketPathFor(mountPoint: string): string {
   return join(socketsDir, `crm-fuse-${slugify(mountPoint)}.sock`)
 }

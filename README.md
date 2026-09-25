@@ -124,6 +124,86 @@ EOF
 
 Settings in a closer `crm.toml` override the global config. The `--config` flag overrides everything.
 
+## Enterprise Mode (server)
+
+Local mode is the default: one SQLite file, zero setup. For a team, run
+**one server** and point every machine (and every agent) at it:
+
+```bash
+# the server host (port 8443 by default, TLS always on)
+crm serve
+
+# every other machine: log in once, then use the exact same commands
+crm login --server crm.internal:8443
+# → prompts for username/password on the TTY, stores a session token (0600)
+crm whoami
+crm contact add --name "Jane Doe" --email jane@acme.com   # runs on the server
+```
+
+### First boot
+
+The server prints a one-time bootstrap code to stdout when the `users`
+table is empty:
+
+```
+BOOTSTRAP-CODE=crm-bootstrap-XXXX
+READY 8443
+```
+
+```
+crm admin bootstrap --server crm.internal:8443 --code crm-bootstrap-XXXX \
+  --username admin --password 'some-strong-password'
+```
+
+That creates the `owner` account. Bootstrap is refused once any user exists.
+
+### Accounts & tokens
+
+| Command | What it does |
+|---|---|
+| `crm login` | Username/password on the TTY → session token in `~/.crm/credentials` (0600) |
+| `crm whoami` | Verify the saved token and show user + role |
+| `crm logout` | Forget the saved session (token stays valid server-side) |
+| `crm admin user create --username u --role writer` | Provision a user; prints a **one-time** initial password |
+| `crm admin user list \| set-role \| disable \| enable` | Manage accounts |
+| `crm admin token create --name bot` | Service token for agents/services (shown once) |
+| `crm admin token list \| revoke` | Manage service tokens |
+
+Roles: `owner`, `admin`, `writer`, `reader`. Non-admins calling `admin.*`
+methods get `FORBIDDEN`. Agent/service accounts are **token-only rows** —
+no password, no TTY needed. A service token authenticates over the wire via
+the `auth.token` frame (the same path `crm whoami` uses); the ergonomic
+`CRM_SERVER` + `CRM_TOKEN` env vars and the full remote data-command surface
+(`crm contact add …` against the server) land in P2.
+
+Security model: passwords are **argon2id** (m=19 MiB, t=2, p=1); 5 failed
+logins lock the account for 15 minutes (`[auth] lockout_*`); tokens are
+stored **hashed only** (SHA-256) — the raw value is shown exactly once and
+can be revoked or expired; every login (success or failure) and admin
+action writes an `audit_log` row.
+
+### Server config (`crm.toml` on the server host)
+
+```toml
+[serve]
+port = 8443
+host = "127.0.0.1"      # keep loopback; front with a TLS reverse proxy
+# cert = "/etc/crm/server.crt"   # CA-signed material; without it a
+# key = "/etc/crm/server.key"    # self-signed dev cert is minted via openssl
+
+[auth]
+lockout_threshold = 5     # failed logins before lockout
+lockout_minutes = 15
+password_min_length = 12
+```
+
+`GET /healthz` on the same port answers `{"ok":true}` for load balancers.
+
+### Deployment
+
+- **Docker:** `docker build -t crm .` then `docker run -p 8443:8443 -v crm-data:/data crm`
+- **systemd:** see [`deploy/crm.service`](deploy/crm.service)
+
 ---
 
 ## CLI Reference

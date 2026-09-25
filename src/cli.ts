@@ -6,14 +6,17 @@ import {
   registerActivityCommands,
   registerLogCommand,
 } from './commands/activity'
+import { registerAdminCommands } from './commands/admin'
 import { registerCompanyCommands } from './commands/company'
 import { registerContactCommands } from './commands/contact'
 import { registerDealCommands, registerPipelineCommand } from './commands/deal'
 import { registerDupesCommand } from './commands/dupes'
 import { registerFuseCommands } from './commands/fuse'
 import { registerImportExportCommands } from './commands/importexport'
+import { registerLoginCommands } from './commands/login'
 import { registerReportCommands } from './commands/report'
 import { registerSearchCommands } from './commands/search'
+import { registerServeCommand } from './commands/serve'
 import { registerTagCommands } from './commands/tag'
 import { startDaemon } from './fuse-daemon'
 import { cleanArgv } from './lib/helpers'
@@ -42,6 +45,9 @@ registerReportCommands(program)
 registerImportExportCommands(program)
 registerDupesCommand(program)
 registerFuseCommands(program)
+registerServeCommand(program)
+registerLoginCommands(program)
+registerAdminCommands(program)
 
 // Hidden subcommand: runs the FUSE daemon in-process (used by `crm mount`)
 if (cleanArgv[0] === '__daemon') {
