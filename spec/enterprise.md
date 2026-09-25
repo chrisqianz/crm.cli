@@ -384,6 +384,12 @@ P4 share the write-site touch points — plan them as one pass over the same
 promote LDAP from P6 to the slot right after P3 — it depends only on the
 P3 users/roles model.
 
+Known flaky test (pre-existing, verified by A/B on f9bdc95 vs 3100ca6):
+`test/db-busy-timeout.test.ts` (40 parallel writers, 5s busy_timeout) fails
+intermittently under machine load — one writer exceeds the 5s lock wait.
+Its proper fix is the write-retry/backoff semantics that P3 builds along
+with CAS; do not weaken the test in P0.
+
 ## Test additions (spec-first, before each phase's code)
 
 - `test/enterprise/auth.test.ts` — auth handshake, wrong token, expired
