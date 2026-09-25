@@ -71,19 +71,82 @@ cleanly for the target scale.
 
 ## Authentication and identity
 
-Two client kinds, two auth mechanisms, one identity model.
+Two client kinds (humans, agents). Two identity sources for humans:
+**local accounts** (self-hosted, zero external dependency — always
+available) and **LDAP** (the enterprise unified identity: Active Directory
+or any RFC 4511 directory). The `users` table remains the single authority
+for role and token regardless of where the password was checked — the
+directory verifies passwords; the CRM verifies identity, role, and
+permission.
 
-**Humans (interactive CLI):**
+OIDC/SSO is deliberately **not** the core model. The target enterprises
+already run a directory as their unified identity; putting an OIDC idP in
+front of the CRM would add a dependency that usually does not exist. OIDC
+is retained only as an optional later add-on (same `users` table, third
+`auth_source`) — it changes nothing below.
 
-- `crm login` → v1: paste a token issued by the server admin (works with no
-  external identity provider). v1.5 (phase P6): OIDC device-code flow
-  (RFC 8628) for enterprise SSO — terminal shows a code, user authorizes in
-  the browser, token lands in the CLI. No embedded web server, no
-  redirect-port juggling: the standard CLI+SSO answer.
-- Credential storage: OS keychain (macOS Keychain / Linux Secret Service),
-  fallback file `~/.crm/credentials` chmod 0600. `crm whoami`, `crm logout`.
+**Human accounts — local (baseline):**
+
+- The server manages its own accounts. `crm admin user create --username
+  jane --display-name "Jane Doe" --role writer` provisions a user; the
+  admin sets the initial password (or enforces a first-login reset).
+- `crm login` prompts for username and password on the TTY — never as a
+  command-line argument (no shell-history / process-list leakage). The
+  server verifies against the stored **argon2id** hash and issues a session
+  token.
+- Brute-force defense: per-username failure counter with temporary lockout
+  (`auth.lockout_threshold` default 5, `auth.lockout_minutes` default 15).
+  Every attempt — success or failure — is an audit row with IP.
+  (`action = auth.login` / `auth.login-failed`)
+- Password policy: `auth.password_min_length` (default 12), optional
+  expiry. Credentials on the client side: OS keychain (macOS Keychain /
+  Linux Secret Service), fallback `~/.crm/credentials` chmod 0600.
+  `crm whoami`, `crm logout`.
 - Token format: `crm_` + 32 random bytes base64url. **Server stores only the
   SHA-256 hash**, never the raw token (same discipline as GitHub PATs).
+
+**Human accounts — LDAP (enterprise unified identity):**
+
+- The directory is the password authority; the CRM never stores or resets
+  directory passwords. Server config:
+
+  ```toml
+  [auth]
+  default_role = "none"        # LDAP user in no mapped group → deny by default
+
+  [ldap]
+  url = "ldaps://ldap.company.com:636"    # or ldap:// + starttls = true
+  base_dn = "ou=people,dc=company,dc=com"
+  bind_dn = "cn=crm-service,ou=svc,dc=company,dc=com"
+  bind_password_env = "CRM_LDAP_BIND_PASSWORD"  # never inline in config
+  user_filter = "(sAMAccountName={username})"  # AD-style; any RFC 2254 filter
+  group_base_dn = "ou=groups,dc=company,dc=com"
+
+  [ldap.roles]                       # group DN → CRM role (RBAC bridge)
+  "cn=crm-admins,ou=groups,dc=company,dc=com" = "admin"
+  "cn=crm-writers,ou=groups,dc=company,dc=com" = "writer"
+  ```
+
+- Flow is the standard two-step: bind as service account → search under
+  `base_dn` with the escaped filter → bind as the found entry to verify the
+  password. All user input goes through the library's escaping — no
+  hand-built LDAP strings (injection). TLS is mandatory (`ldaps://` or
+  StartTLS); plain `ldap://` without StartTLS is refused at boot.
+- First successful directory login **JIT-provisions** the local row
+  (`auth_source = "ldap"`, `ldap_dn` recorded, username/display/email from
+  the entry). Role comes from group membership via `[ldap.roles]`; a user in
+  no mapped group gets `auth.default_role` (default `none` = access denied —
+  default-deny posture).
+- When LDAP is configured, the directory wins for usernames that resolve in
+  it; local accounts whose username does not resolve keep local password
+  auth. Service accounts (agents) are always local and never touched by the
+  directory.
+- Library: `ldapts` (actively maintained). `ldapjs` is maintenance-mode and
+  is not an option.
+- `crm admin user disable` works locally for incident response
+  (`disabled_at`) without touching the directory; re-enabling is local.
+- Client experience is identical to local accounts — the same `crm login`
+  prompt; the server decides which source answers.
 
 **Agents / skills (non-interactive):**
 
@@ -91,9 +154,10 @@ Two client kinds, two auth mechanisms, one identity model.
   existing override chain (`env > config file > defaults`) that already powers
   `CRM_DB`, `CRM_CONFIG`, `CRM_FORMAT` — no new mechanism, two new keys.
 - Agent tokens are **service accounts** bound to a user record with a role
-  and optional scope restrictions. Default posture: read-only; admins grant
-  `writer` per agent. One token per agent, revocable individually, per-token
-  `last_used_at` for anomaly spotting.
+  and optional scope restrictions. They are always local, token-only rows
+  (`auth_source = "local"`, no password). Default posture: read-only; admins
+  grant `writer` per agent. One token per agent, revocable individually,
+  per-token `last_used_at` for anomaly spotting.
 - `crm.toml` gains a `[remote]` section (`server`, `insecure` for dev) so a
   checked-in project config can point a team at their server without env
   juggling.
@@ -168,6 +232,9 @@ CREATE TABLE users (
   username TEXT NOT NULL UNIQUE,
   display_name TEXT,
   email TEXT,
+  auth_source TEXT NOT NULL DEFAULT 'local',  -- local | ldap (| oidc later)
+  password_hash TEXT,             -- argon2id; NULL for ldap / token-only rows
+  ldap_dn TEXT,
   role TEXT NOT NULL DEFAULT 'reader',   -- owner|admin|writer|reader
   created_at TEXT NOT NULL,
   disabled_at TEXT                 -- soft-disable, never delete (audit refs)
@@ -295,22 +362,31 @@ drive the CLI client against it.
 | Phase | Content | Exit criteria |
 |---|---|---|
 | **P0** (0.5 wk) | Socket perms, hooks marker, dep audit | `bun test` green; new tests prove socket is 0600 and project hooks are inert without marker |
-| **P1** (2–3 wk) | `crm serve`: TCP+TLS, token auth (hash store), connection limits, `/healthz`, systemd/Docker | Client authenticates over TLS; bad/missing token → `AUTH`; health endpoint answers; server survives restart with existing DB |
+| **P1** (2.5–3.5 wk) | `crm serve`: TCP+TLS, **local accounts** (argon2id, lockout, login audit rows), `users`/`tokens` tables, token issuance (hash store), connection limits, `/healthz`, systemd/Docker | `crm admin user create` + `crm login` (username/password on TTY) issues a token; wrong password increments lockout counter + audit row; bad token → `AUTH`; health endpoint answers; server survives restart with existing DB |
 | **P2** (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode, ONNX model server-side | All existing commands work identically in local and remote mode; scenario tests run against both; remote CLI has zero local DB access (proven by test with no `~/.crm`) |
 | **P3** (3–4 wk) | users/tokens tables, RBAC, actor threading, `version` + CAS, exit code 3 | RBAC matrix test (4 roles × read/write/admin); two concurrent writers → one wins, other gets exit 3 with current state; `crm login`/`whoami`/`logout` |
 | **P4** (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
-| **P6** (4–8 wk, optional) | OIDC device-code SSO, field-level encryption for sensitive columns, data-subject export/delete, token expiry policy | `crm login` completes against a test IdP; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
+| **P6** (6–10 wk) | **LDAP directory integration** (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI), field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 
-Sequencing note: P1's token auth is the same mechanism P3's users/tokens
-formalize (P1 ships a single static token; P3 generalizes it). P3 and P4
-share the write-site touch points — plan them as one pass over the same
-~20 locations.
+Sequencing note: P1 introduces `users`/`tokens` + local password login;
+P3 adds roles/RBAC, CAS, and actor threading across all call sites. P3 and
+P4 share the write-site touch points — plan them as one pass over the same
+~20 locations. If the target customer requires directory login at go-live,
+promote LDAP from P6 to the slot right after P3 — it depends only on the
+P3 users/roles model.
 
 ## Test additions (spec-first, before each phase's code)
 
 - `test/enterprise/auth.test.ts` — auth handshake, wrong token, expired
-  token, token revocation, hash-at-rest (raw token never in DB file)
+  token, token revocation, hash-at-rest (raw token never in DB file),
+  local-account login (success / wrong password / lockout), login-failure
+  audit rows
+- `test/enterprise/ldap.test.ts` — two-step bind against in-docker LDAP
+  (e.g. osixia/openldap), JIT provisioning + dn/email capture, group→role
+  mapping, no-group default-deny, injection-style usernames rejected,
+  unreachable directory → clean `AUTH` error (no crash, no fallback to
+  local password)
 - `test/enterprise/rbac.test.ts` — full role matrix, incl. cross-role read
   filtering
 - `test/enterprise/concurrency.test.ts` — two clients, same entity, same
