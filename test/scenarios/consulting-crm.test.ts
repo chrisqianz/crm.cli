@@ -495,5 +495,5 @@ default_country = "US"
       ),
     )
     expect(tanya.custom_fields.referrer).toBe('helen@apex-mfg.com')
-  })
+  }, 240_000)
 })

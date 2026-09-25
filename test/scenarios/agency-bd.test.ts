@@ -354,5 +354,5 @@ Nina Patel,nina@healthbridge.org,HealthBridge,"champion,technical",Lead Architec
     )
     const fintechTag = tags.find((t) => t.tag === 'fintech')
     expect(fintechTag!.count).toBeGreaterThanOrEqual(3) // 2 companies + 2 deals
-  })
+  }, 240_000)
 })

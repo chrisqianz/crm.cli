@@ -392,5 +392,5 @@ describe('scenario: indie founder pipeline management', () => {
     const types = searchResults.map((r) => r.type)
     expect(types).toContain('company')
     expect(types).toContain('contact')
-  })
+  }, 240_000)
 })

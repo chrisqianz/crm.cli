@@ -5,6 +5,7 @@ import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import type { User } from '../drizzle-schema'
 import * as schema from '../drizzle-schema'
+import { ServiceError } from '../lib/errors'
 import {
   generatePassword,
   generateToken,
@@ -12,6 +13,7 @@ import {
   hashToken,
   verifyPassword,
 } from '../lib/secrets'
+import { METHODS, roleAllows } from '../service/registry'
 
 // ── Protocol error (spec/enterprise.md §Error model) ──
 
@@ -363,8 +365,9 @@ async function issueToken(
 
 // ── Command dispatch (post-auth frames) ──
 
-export function handleCommand(
+export async function handleCommand(
   db: DB,
+  config: CRMConfig,
   ctx: { ip: string },
   identity: Identity,
   method: string,
@@ -379,7 +382,34 @@ export function handleCommand(
     }
     return handleAdmin(db, ctx, identity, method, params)
   }
-  throw new ServerError('INVALID', `unknown method "${method}"`)
+  const def = METHODS[method]
+  if (!def) {
+    throw new ServerError('INVALID', `unknown method "${method}"`)
+  }
+  if (!roleAllows(def.minRole, identity.role)) {
+    throw new ServerError(
+      'FORBIDDEN',
+      `role "${identity.role}" cannot call ${method}`,
+    )
+  }
+  try {
+    const result = await def.fn(db, config, params)
+    if (def.write) {
+      await recordAudit(db, {
+        action: method,
+        actor_id: identity.id,
+        actor_name: identity.username,
+        source: 'rpc',
+        ip: ctx.ip,
+      })
+    }
+    return result
+  } catch (e) {
+    if (e instanceof ServiceError) {
+      throw new ServerError(e.code, e.message)
+    }
+    throw e
+  }
 }
 
 function handleAdmin(

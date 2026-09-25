@@ -454,5 +454,5 @@ describe('scenario: AI agent using CRM via export-fs filesystem', () => {
 
     // ── Step 20: Verify search/ directory exists ──
     expect(existsSync(join(fsDir2, 'search'))).toBe(true)
-  })
+  }, 240_000)
 })

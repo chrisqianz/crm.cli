@@ -6,6 +6,7 @@ import tls, { type TLSSocket } from 'node:tls'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
+import { ServiceError } from '../lib/errors'
 import { certsDir, ensurePrivateDir } from '../lib/paths'
 import { handleAuth, handleCommand, recordAudit, ServerError } from './handlers'
 
@@ -175,6 +176,7 @@ export function startServer(opts: ServeOptions): Promise<tls.Server> {
         } else {
           const result = await handleCommand(
             db,
+            config,
             { ip: ctx.ip },
             identity.current,
             msg.method,
@@ -183,13 +185,17 @@ export function startServer(opts: ServeOptions): Promise<tls.Server> {
           respond(msg.id, result)
         }
       } catch (e) {
-        const err =
-          e instanceof ServerError
-            ? e
-            : new ServerError(
-                'INTERNAL',
-                e instanceof Error ? e.message : String(e),
-              )
+        let err: ServerError
+        if (e instanceof ServerError) {
+          err = e
+        } else if (e instanceof ServiceError) {
+          err = new ServerError(e.code, e.message)
+        } else {
+          err = new ServerError(
+            'INTERNAL',
+            e instanceof Error ? e.message : String(e),
+          )
+        }
         respond(msg.id, undefined, err)
       }
     }

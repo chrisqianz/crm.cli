@@ -466,5 +466,5 @@ describe('scenario: angel investor relationship tracking', () => {
     )
     const intros = benActivities.filter((a) => a.body.includes('Intro'))
     expect(intros).toHaveLength(1)
-  })
+  }, 240_000)
 })

@@ -9,12 +9,15 @@ import * as schema from '../drizzle-schema'
 import { companyToRow, contactToRow, dealToRow, safeJSON } from '../format'
 import { formatPhone, tryNormalizePhone } from '../normalize'
 import { resolveCompanyForLink, resolveContact } from '../resolve'
+import { ServiceError } from './errors'
 
 // ── Global option extraction ──
 const rawArgv = process.argv.slice(2)
 export let gDb: string | undefined,
   gConfig: string | undefined,
-  gFmt: string | undefined
+  gFmt: string | undefined,
+  gRemote = false,
+  gInsecure = false
 export const cleanArgv: string[] = []
 let _argIdx = 0
 while (_argIdx < rawArgv.length) {
@@ -28,6 +31,10 @@ while (_argIdx < rawArgv.length) {
   } else if (arg === '--format') {
     _argIdx++
     gFmt = rawArgv[_argIdx]
+  } else if (arg === '--remote') {
+    gRemote = true
+  } else if (arg === '--insecure') {
+    gInsecure = true
   } else if (arg !== '--no-color') {
     cleanArgv.push(arg)
   }
@@ -77,6 +84,39 @@ export function confirmOrForce(force: boolean | undefined, label: string) {
   }
 }
 
+/**
+ * Like confirmOrForce but for the service layer: throws ServiceError instead
+ * of exiting, so it can run inside `crm serve` where a refused prompt must
+ * surface as an RPC error rather than kill the daemon.
+ */
+export function confirmOrThrow(
+  force: boolean | undefined,
+  label: string,
+): void {
+  if (force) {
+    return
+  }
+  if (!process.stdin.isTTY) {
+    throw new ServiceError(
+      'INVALID',
+      `Error: refusing to delete ${label} without --force (non-interactive)`,
+    )
+  }
+  const fs = require('node:fs')
+  process.stdout.write(`Delete ${label}? [y/N] `)
+  const buf = Buffer.alloc(64)
+  const fd = fs.openSync('/dev/tty', 'r')
+  try {
+    const n = fs.readSync(fd, buf, 0, 64, null)
+    const answer = buf.slice(0, n).toString().trim().toLowerCase()
+    if (answer !== 'y' && answer !== 'yes') {
+      throw new ServiceError('INVALID', 'Aborted')
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
+}
+
 export function parseKV(arr: string[]): Record<string, unknown> {
   const r: Record<string, unknown> = {}
   for (const s of arr || []) {
@@ -88,7 +128,10 @@ export function parseKV(arr: string[]): Record<string, unknown> {
         try {
           r[key.slice(5)] = JSON.parse(val)
         } catch {
-          die(`Error: invalid JSON for custom field "${key.slice(5)}"`)
+          throw new ServiceError(
+            'INVALID',
+            `Error: invalid JSON for custom field "${key.slice(5)}"`,
+          )
         }
       } else {
         r[key] = val
@@ -162,7 +205,10 @@ export async function getOrCreateContactId(
 
 export function validateEmail(email: string): void {
   if (!email.includes('@') || email.startsWith('@') || email.endsWith('@')) {
-    die(`Error: invalid email "${email}" — must contain @`)
+    throw new ServiceError(
+      'INVALID',
+      `Error: invalid email "${email}" — must contain @`,
+    )
   }
 }
 
@@ -178,7 +224,8 @@ export async function checkDupeEmail(
     }
     const emails: string[] = safeJSON(c.emails)
     if (emails.some((e) => e.toLowerCase() === email.toLowerCase())) {
-      die(
+      throw new ServiceError(
+        'CONFLICT',
         `Error: duplicate email "${email}" — already belongs to ${c.name} (${c.id})`,
       )
     }
@@ -201,7 +248,8 @@ export async function checkDupePhone(
     }
     const phones: string[] = safeJSON(c.phones)
     if (phones.includes(phone)) {
-      die(
+      throw new ServiceError(
+        'CONFLICT',
         `Error: duplicate phone "${phone}" — already belongs to ${c.name} (${c.id})`,
       )
     }
@@ -220,7 +268,8 @@ export async function checkDupeWebsite(
     }
     const websites: string[] = safeJSON(co.websites)
     if (websites.includes(website)) {
-      die(
+      throw new ServiceError(
+        'CONFLICT',
         `Error: duplicate website "${website}" — already belongs to ${co.name} (${co.id})`,
       )
     }
@@ -240,7 +289,8 @@ export async function checkDupeSocial(
     .where(eq(schema.contacts[col], handle))
   const match = existing[0]
   if (match && match.id !== excludeId) {
-    die(
+    throw new ServiceError(
+      'CONFLICT',
       `Error: duplicate ${platform} handle "${handle}" — already belongs to ${match.name} (${match.id})`,
     )
   }

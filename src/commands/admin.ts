@@ -21,22 +21,23 @@ function resolveAddrOrDie(opts: AdminOpts): { host: string; port: number } {
   return { host, port }
 }
 
-/** Connect authenticated as the saved session and run `fn`. */
+/** Connect authenticated (saved session, or CRM_TOKEN env for agent mode) and run `fn`. */
 async function withSession(
   opts: AdminOpts,
   fn: (client: RpcClient) => Promise<void>,
 ): Promise<void> {
   const session = loadSession()
-  if (!session) {
-    die('Not logged in. Run `crm login` first.')
+  const token = session?.token ?? process.env.CRM_TOKEN
+  if (!token) {
+    die('Not logged in. Run `crm login` first (or set CRM_SERVER + CRM_TOKEN).')
   }
   const { host, port } = resolveAddrOrDie(opts)
   const client = await RpcClient.connect(port, host, {
-    insecure: !!opts.insecure,
+    insecure: !!opts.insecure || process.env.CRM_INSECURE === '1',
   }).catch((e: Error) => die(`cannot connect to ${host}:${port}: ${e.message}`))
   try {
     await client
-      .call('auth.token', { token: session.token })
+      .call('auth.token', { token })
       .catch((e: Error) =>
         die(`not authenticated: ${e.message} (run \`crm login\`)`),
       )

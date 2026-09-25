@@ -5,11 +5,13 @@ import { join } from 'node:path'
 
 import { RpcClient } from '../../src/lib/rpc.ts'
 
-const REPO = join(import.meta.dir, '..', '..')
+export const REPO = join(import.meta.dir, '..', '..')
 export const CRM = join(REPO, 'src', 'cli.ts')
 
 export interface TestServer {
   close: () => Promise<void>
+  /** Absolute path of the server-side database file */
+  dbPath: string
   /** Full stdout+stderr captured from the server process */
   log: () => string
   port: number
@@ -21,14 +23,21 @@ export interface TestServer {
  * The server prints `READY <port>` to stdout once the TLS listener is up,
  * and `BOOTSTRAP-CODE=<code>` when the users table is empty.
  */
-export async function startServer(dbPath: string): Promise<TestServer> {
+export async function startServer(
+  dbPath: string,
+  opts?: { configPath?: string },
+): Promise<TestServer> {
   const proc = spawn(
     'bun',
     ['run', CRM, 'serve', '--port', '0', '--db', dbPath],
     {
       cwd: REPO,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, NO_COLOR: '1', CRM_CONFIG: '' },
+      env: {
+        ...process.env,
+        NO_COLOR: '1',
+        CRM_CONFIG: opts?.configPath ?? '',
+      },
     },
   )
   let out = ''
@@ -62,6 +71,7 @@ export async function startServer(dbPath: string): Promise<TestServer> {
   return {
     port,
     proc,
+    dbPath,
     log: () => out + err,
     close: async () => {
       proc.kill('SIGTERM')

@@ -1,64 +1,10 @@
 import { readFileSync } from 'node:fs'
 
 import type { Command } from 'commander'
-import { eq } from 'drizzle-orm'
 
-import type { DB } from '../db'
-import { upsertSearchIndex } from '../db'
-import type { Contact } from '../drizzle-schema'
-import * as schema from '../drizzle-schema'
-import {
-  activityToRow,
-  companyToRow,
-  contactToRow,
-  dealToRow,
-  formatOutput,
-  safeJSON,
-} from '../format'
-import {
-  buildCompanySearch,
-  buildContactSearch,
-  buildDealSearch,
-  die,
-  getCtx,
-  makeId,
-  now,
-  parseCSV,
-} from '../lib/helpers'
-import { normalizeWebsite, tryNormalizePhone } from '../normalize'
-
-const CONTACT_FIELDS = new Set([
-  'name',
-  'email',
-  'emails',
-  'phone',
-  'phones',
-  'company',
-  'companies',
-  'tags',
-  'linkedin',
-  'x',
-  'bluesky',
-  'telegram',
-])
-const COMPANY_FIELDS = new Set([
-  'name',
-  'website',
-  'websites',
-  'phone',
-  'phones',
-  'tags',
-])
-const DEAL_FIELDS = new Set([
-  'title',
-  'value',
-  'stage',
-  'contacts',
-  'company',
-  'expected_close',
-  'probability',
-  'tags',
-])
+import { formatOutput } from '../format'
+import { parseCSV } from '../lib/helpers'
+import { dispatch, renderCtx } from '../remote/dispatch'
 
 export function registerImportExportCommands(program: Command) {
   const imp = program.command('import').description('Import data')
@@ -70,135 +16,23 @@ export function registerImportExportCommands(program: Command) {
     .option('--skip-errors')
     .option('--update')
     .action(async (file, opts) => {
-      const { db, config } = await getCtx()
       const records = readRecords(file)
-      let imported = 0,
-        skipped = 0,
-        errors = 0
-      for (const rec of records) {
-        try {
-          if (!rec.name) {
-            if (opts.skipErrors) {
-              errors++
-              continue
-            }
-            die('Error: row missing name')
-          }
-          const name = (rec.name || '').trim()
-          const emails = splitField(rec.email || rec.emails)
-            .map((e) => e.trim())
-            .filter(
-              (e) => e.includes('@') && !e.startsWith('@') && !e.endsWith('@'),
-            )
-          const phones = splitField(rec.phone || rec.phones)
-            .map((p) => {
-              const n = tryNormalizePhone(p, config.phone.default_country)
-              return n || p
-            })
-            .filter((p) => /^\+\d+$/.test(p))
-          const companies = splitField(rec.company || rec.companies).map((c) =>
-            c.trim(),
-          )
-          const tags = splitField(rec.tags).map((t) => t.trim())
-          // Check for existing by email
-          let existing: Contact | null = null
-          for (const e of emails) {
-            existing = await findContactByEmail(db, e)
-            if (existing) {
-              break
-            }
-          }
-          if (existing && !opts.update) {
-            skipped++
-            continue
-          }
-          if (existing && opts.update) {
-            const custom: Record<string, unknown> = safeJSON(
-              existing.custom_fields,
-            )
-            for (const [k, v] of Object.entries(rec)) {
-              if (!CONTACT_FIELDS.has(k) && v) {
-                custom[k] = v
-              }
-            }
-            await db
-              .update(schema.contacts)
-              .set({
-                name: name || existing.name,
-                custom_fields: JSON.stringify(custom),
-                updated_at: now(),
-              })
-              .where(eq(schema.contacts.id, existing.id))
-            const results = await db
-              .select()
-              .from(schema.contacts)
-              .where(eq(schema.contacts.id, existing.id))
-            const row = results[0]
-            await upsertSearchIndex(
-              db,
-              'contact',
-              existing.id,
-              await buildContactSearch(db, row),
-            )
-            imported++
-            continue
-          }
-          if (opts.dryRun) {
-            console.log(`[dry-run] ${name} (${emails.join(', ')})`)
-            imported++
-            continue
-          }
-          const id = makeId('ct')
-          const n = now()
-          const custom: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(rec)) {
-            if (!CONTACT_FIELDS.has(k) && v) {
-              custom[k] = v
-            }
-          }
-          const social: Record<string, string | null> = {
-            linkedin: rec.linkedin?.trim() || null,
-            x: rec.x?.trim() || null,
-            bluesky: rec.bluesky?.trim() || null,
-            telegram: rec.telegram?.trim() || null,
-          }
-          await db.insert(schema.contacts).values({
-            id,
-            name,
-            emails: JSON.stringify(emails),
-            phones: JSON.stringify(phones),
-            companies: JSON.stringify(companies),
-            linkedin: social.linkedin,
-            x: social.x,
-            bluesky: social.bluesky,
-            telegram: social.telegram,
-            tags: JSON.stringify(tags),
-            custom_fields: JSON.stringify(custom),
-            created_at: n,
-            updated_at: n,
-          })
-          const results = await db
-            .select()
-            .from(schema.contacts)
-            .where(eq(schema.contacts.id, id))
-          const row = results[0]
-          await upsertSearchIndex(
-            db,
-            'contact',
-            id,
-            await buildContactSearch(db, row),
-          )
-          imported++
-        } catch (e: unknown) {
-          if (opts.skipErrors) {
-            errors++
-            continue
-          }
-          die(`Error importing row: ${(e as Error).message}`)
-        }
+      const result = (await dispatch('import.contacts', {
+        records,
+        dryRun: opts.dryRun,
+        skipErrors: opts.skipErrors,
+        update: opts.update,
+      })) as {
+        imported: number
+        skipped: number
+        errors: number
+        dryRunLines: string[]
+      }
+      for (const line of result.dryRunLines) {
+        console.log(line)
       }
       console.log(
-        `Imported: ${imported}, skipped: ${skipped}, errors: ${errors}`,
+        `Imported: ${result.imported}, skipped: ${result.skipped}, errors: ${result.errors}`,
       )
     })
 
@@ -208,68 +42,16 @@ export function registerImportExportCommands(program: Command) {
     .option('--dry-run')
     .option('--skip-errors')
     .action(async (file, opts) => {
-      const { db, config } = await getCtx()
       const records = readRecords(file)
-      let imported = 0
-      for (const rec of records) {
-        try {
-          if (!rec.name) {
-            if (opts.skipErrors) {
-              continue
-            }
-            die('Error: company missing name')
-          }
-          rec.name = rec.name.trim()
-          const websites = splitField(rec.website || rec.websites).map((w) => {
-            try {
-              return normalizeWebsite(w)
-            } catch {
-              return w
-            }
-          })
-          const phones = splitField(rec.phone || rec.phones).map((p) => {
-            const n = tryNormalizePhone(p, config.phone.default_country)
-            return n || p
-          })
-          const tags = splitField(rec.tags)
-          const custom: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(rec)) {
-            if (!COMPANY_FIELDS.has(k) && v) {
-              custom[k] = v
-            }
-          }
-          if (opts.dryRun) {
-            console.log(`[dry-run] ${rec.name}`)
-            imported++
-            continue
-          }
-          const id = makeId('co')
-          const n = now()
-          await db.insert(schema.companies).values({
-            id,
-            name: rec.name,
-            websites: JSON.stringify(websites),
-            phones: JSON.stringify(phones),
-            tags: JSON.stringify(tags),
-            custom_fields: JSON.stringify(custom),
-            created_at: n,
-            updated_at: n,
-          })
-          const results = await db
-            .select()
-            .from(schema.companies)
-            .where(eq(schema.companies.id, id))
-          const row = results[0]
-          await upsertSearchIndex(db, 'company', id, buildCompanySearch(row))
-          imported++
-        } catch (e: unknown) {
-          if (opts.skipErrors) {
-            continue
-          }
-          die(`Error: ${(e as Error).message}`)
-        }
+      const result = (await dispatch('import.companies', {
+        records,
+        dryRun: opts.dryRun,
+        skipErrors: opts.skipErrors,
+      })) as { imported: number; dryRunLines: string[] }
+      for (const line of result.dryRunLines) {
+        console.log(line)
       }
-      console.log(`Imported: ${imported}`)
+      console.log(`Imported: ${result.imported}`)
     })
 
   imp
@@ -278,99 +60,48 @@ export function registerImportExportCommands(program: Command) {
     .option('--dry-run')
     .option('--skip-errors')
     .action(async (file, opts) => {
-      const { db, config } = await getCtx()
       const records = readRecords(file)
-      let imported = 0
-      for (const rec of records) {
-        try {
-          if (!rec.title) {
-            if (opts.skipErrors) {
-              continue
-            }
-            die('Error: deal missing title')
-          }
-          rec.title = rec.title.trim()
-          const stage = (rec.stage || config.pipeline.stages[0]).trim()
-          const value = rec.value ? Number(rec.value) : null
-          const tags = splitField(rec.tags)
-          const custom: Record<string, unknown> = {}
-          for (const [k, v] of Object.entries(rec)) {
-            if (!DEAL_FIELDS.has(k) && v) {
-              custom[k] = v
-            }
-          }
-          if (opts.dryRun) {
-            console.log(`[dry-run] ${rec.title}`)
-            imported++
-            continue
-          }
-          const id = makeId('dl')
-          const n = now()
-          await db.insert(schema.deals).values({
-            id,
-            title: rec.title,
-            value,
-            stage,
-            contacts: '[]',
-            company: null,
-            expected_close: rec.expected_close || null,
-            probability: rec.probability ? Number(rec.probability) : null,
-            tags: JSON.stringify(tags),
-            custom_fields: JSON.stringify(custom),
-            created_at: n,
-            updated_at: n,
-          })
-          const results = await db
-            .select()
-            .from(schema.deals)
-            .where(eq(schema.deals.id, id))
-          const row = results[0]
-          await upsertSearchIndex(db, 'deal', id, buildDealSearch(row))
-          imported++
-        } catch (e: unknown) {
-          if (opts.skipErrors) {
-            continue
-          }
-          die(`Error: ${(e as Error).message}`)
-        }
+      const result = (await dispatch('import.deals', {
+        records,
+        dryRun: opts.dryRun,
+        skipErrors: opts.skipErrors,
+      })) as { imported: number; dryRunLines: string[] }
+      for (const line of result.dryRunLines) {
+        console.log(line)
       }
-      console.log(`Imported: ${imported}`)
+      console.log(`Imported: ${result.imported}`)
     })
 
   const exp = program.command('export').description('Export data')
   exp.command('contacts').action(async () => {
-    const { db, config, fmt } = await getCtx()
-    const rows = (await db.select().from(schema.contacts)).map((c) =>
-      contactToRow(c),
+    const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
+      'export.contacts',
+      {},
     )
+    const { config, fmt } = renderCtx()
     console.log(formatOutput(rows, fmt, config))
   })
   exp.command('companies').action(async () => {
-    const { db, config, fmt } = await getCtx()
-    const rows = (await db.select().from(schema.companies)).map((c) =>
-      companyToRow(c),
+    const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
+      'export.companies',
+      {},
     )
+    const { config, fmt } = renderCtx()
     console.log(formatOutput(rows, fmt, config))
   })
   exp.command('deals').action(async () => {
-    const { db, config, fmt } = await getCtx()
-    const rows = (await db.select().from(schema.deals)).map((d) => dealToRow(d))
+    const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
+      'export.deals',
+      {},
+    )
+    const { config, fmt } = renderCtx()
     console.log(formatOutput(rows, fmt, config))
   })
   exp.command('all').action(async () => {
-    const { db, config, fmt } = await getCtx()
-    const data = {
-      contacts: (await db.select().from(schema.contacts)).map((c) =>
-        contactToRow(c),
-      ),
-      companies: (await db.select().from(schema.companies)).map((c) =>
-        companyToRow(c),
-      ),
-      deals: (await db.select().from(schema.deals)).map((d) => dealToRow(d)),
-      activities: (await db.select().from(schema.activities)).map((a) =>
-        activityToRow(a),
-      ),
+    const { data } = (await dispatch('export.all', {})) as {
+      data: Record<string, unknown[]>
     }
+    const { config, fmt } = renderCtx()
     if (fmt === 'json') {
       console.log(JSON.stringify(data, null, 2))
     } else {
@@ -409,31 +140,4 @@ function readRecords(file: string): Record<string, string>[] {
     return JSON.parse(raw)
   }
   return parseCSV(raw)
-}
-
-function splitField(val: string | undefined): string[] {
-  if (!val) {
-    return []
-  }
-  if (Array.isArray(val)) {
-    return val
-  }
-  return val
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-}
-
-async function findContactByEmail(
-  db: DB,
-  email: string,
-): Promise<Contact | null> {
-  const all = await db.select().from(schema.contacts)
-  for (const c of all) {
-    const emails: string[] = safeJSON(c.emails)
-    if (emails.some((e: string) => e.toLowerCase() === email.toLowerCase())) {
-      return c
-    }
-  }
-  return null
 }

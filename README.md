@@ -133,11 +133,16 @@ Local mode is the default: one SQLite file, zero setup. For a team, run
 # the server host (port 8443 by default, TLS always on)
 crm serve
 
-# every other machine: log in once, then use the exact same commands
+# every other machine: log in once (proves you may use the server),
+# then point the CLI at it with a config line or the --remote flag
 crm login --server crm.internal:8443
 # → prompts for username/password on the TTY, stores a session token (0600)
 crm whoami
-crm contact add --name "Jane Doe" --email jane@acme.com   # runs on the server
+
+[remote]
+server = "crm.internal:8443"
+
+ crm contact add --name "Jane Doe" --email jane@acme.com   # runs on the server
 ```
 
 ### First boot
@@ -170,17 +175,61 @@ That creates the `owner` account. Bootstrap is refused once any user exists.
 | `crm admin token list \| revoke` | Manage service tokens |
 
 Roles: `owner`, `admin`, `writer`, `reader`. Non-admins calling `admin.*`
-methods get `FORBIDDEN`. Agent/service accounts are **token-only rows** —
-no password, no TTY needed. A service token authenticates over the wire via
-the `auth.token` frame (the same path `crm whoami` uses); the ergonomic
-`CRM_SERVER` + `CRM_TOKEN` env vars and the full remote data-command surface
-(`crm contact add …` against the server) land in P2.
+methods get `FORBIDDEN`; non-allowed data methods get
+`role "<role>" cannot call <method>`.
+
+### Remote client mode
+
+Every data command (`contact`, `company`, `deal`, `activity`, `search`,
+`find`, `report`, `tag`, `dupes`, `import/export`, …) runs against the
+server when a remote endpoint is configured — the output is byte-identical
+to local mode (the same service layer executes both). Activation, in
+priority order:
+
+```bash
+# 1. per invocation — flag (token from env or saved login session)
+crm --remote crm.internal:8443 contact list
+#    (add --insecure for self-signed certs, or trust the CA)
+
+# 2. environment — the agent pattern (no session file, no TTY)
+CRM_SERVER=crm.internal:8443 CRM_TOKEN=crm_… CRM_INSECURE=1 crm contact add …
+
+# 3. config — team default on every machine (token from env or session)
+cat >> ~/.crm/config.toml <<'EOF'
+ [remote]
+ server = "crm.internal:8443"
+ insecure = false   # true for self-signed certs
+ EOF
+```
+
+Notes:
+
+- Remote mode is **explicit**: a saved `crm login` session authenticates
+  (and powers `crm admin …` / `crm whoami`) but does not by itself switch
+  data commands to the server — you opt in per invocation (`--remote`) or
+  persistently (`[remote]` / `CRM_SERVER`). That keeps local-only machines
+  local even when a token is present.
+- `CRM_SERVER` without `CRM_TOKEN` never switches data commands —
+  deliberate, so developers with `CRM_SERVER` set for `crm login` don't
+  silently lose their local DB.
+- A remote client never touches a local SQLite file — no `~/.crm/crm.db`
+  is created, ever. (A config file may still be created for local display
+  preferences; that's not data.)
+- `crm rm …` **requires `--force`** in remote mode: the server has no TTY
+to confirm. Local interactive mode still prompts.
+- `crm import …` reads the CSV/JSON on the client and sends the parsed
+records over the wire; validation and writes happen server-side.
+- FUSE mounts and NFS export stay local-only (the server exposes RPC,
+not filesystems).
+- `crm admin token create` is how you issue an agent's service token;
+the token authenticates over the wire via the `auth.token` frame, and the
+env-var pattern works for `admin.*` as well.
 
 Security model: passwords are **argon2id** (m=19 MiB, t=2, p=1); 5 failed
 logins lock the account for 15 minutes (`[auth] lockout_*`); tokens are
 stored **hashed only** (SHA-256) — the raw value is shown exactly once and
-can be revoked or expired; every login (success or failure) and admin
-action writes an `audit_log` row.
+can be revoked or expired; every login (success or failure), every write,
+and every admin action writes an `audit_log` row.
 
 ### Server config (`crm.toml` on the server host)
 
@@ -216,6 +265,8 @@ password_min_length = 12
 | `--format <fmt>`  | `CRM_FORMAT` | Output format: `table`, `json`, `csv`, `tsv`, `ids` |
 | `--no-color`      | `NO_COLOR`   | Disable colored output                              |
 | `--config <path>` | `CRM_CONFIG` | Path to config file                                 |
+| `--remote [addr]` | `CRM_SERVER` | Run data commands against a server (see [Remote client mode](#remote-client-mode)) |
+| `--insecure`      | `CRM_INSECURE` | Skip TLS certificate verification (self-signed)     |
 | `--version`       | —            | Print version                                       |
 
 ---

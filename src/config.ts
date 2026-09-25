@@ -29,6 +29,7 @@ export interface CRMConfig {
   }
   phone: { default_country?: string; display: string }
   pipeline: { stages: string[]; won_stage: string; lost_stage: string }
+  remote: { server: string; insecure: boolean }
   serve: { port: number; host: string; cert: string; key: string }
 }
 
@@ -53,6 +54,7 @@ function defaultConfig(): CRMConfig {
     },
     defaults: { format: 'table' },
     phone: { display: 'international' },
+    remote: { server: '', insecure: false },
     serve: { port: 8443, host: '127.0.0.1', cert: '', key: '' },
     auth: {
       lockout_threshold: 5,
@@ -128,6 +130,15 @@ function mergeConfig(
   }
   if (override.mount) {
     result.mount = { ...result.mount, ...override.mount }
+  }
+  if (override.remote) {
+    result.remote = {
+      ...result.remote,
+      ...(override.remote.server ? { server: override.remote.server } : {}),
+      ...(override.remote.insecure
+        ? { insecure: override.remote.insecure }
+        : {}),
+    }
   }
   if (override.serve) {
     result.serve = {

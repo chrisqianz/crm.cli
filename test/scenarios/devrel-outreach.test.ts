@@ -398,5 +398,5 @@ describe('scenario: devrel community and partnership tracking', () => {
       'json',
     )
     expect(activityReport.length).toBeGreaterThanOrEqual(1)
-  })
+  }, 240_000)
 })

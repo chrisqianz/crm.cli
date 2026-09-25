@@ -84,22 +84,25 @@ export function registerLoginCommands(program: Command): void {
     .option('--insecure', 'Skip TLS certificate verification')
     .action(async (opts: { server?: string; insecure?: boolean }) => {
       const session = loadSession()
-      if (!session) {
-        die('Not logged in. Run `crm login` first.')
+      const token = session?.token ?? process.env.CRM_TOKEN
+      if (!token) {
+        die(
+          'Not logged in. Run `crm login` first (or set CRM_SERVER + CRM_TOKEN).',
+        )
       }
-      const { host, port } = resolveServerAddr(opts.server ?? session.server)
+      const { host, port } = resolveServerAddr(opts.server)
       if (!host) {
         die('No server configured.')
       }
       const client = await RpcClient.connect(port, host, {
-        insecure: !!opts.insecure,
+        insecure: !!opts.insecure || process.env.CRM_INSECURE === '1',
       }).catch((e: Error) =>
         die(`cannot connect to ${host}:${port}: ${e.message}`),
       )
       try {
         const res = await client.call<{
           user: { username: string; role: string }
-        }>('auth.token', { token: session.token })
+        }>('auth.token', { token })
         console.log(`${res.user.username} (${res.user.role}) → ${host}:${port}`)
       } catch (e) {
         die(`not authenticated: ${(e as Error).message}`)

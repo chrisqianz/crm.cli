@@ -34,14 +34,29 @@ export function createTestContext(opts?: { noConfig?: boolean }) {
     ? { ...process.env, NO_COLOR: '1' }
     : { ...process.env, NO_COLOR: '1', CRM_CONFIG: configPath }
 
+  /**
+   * Remote mode: when CRM_TEST_REMOTE_SERVER is set (host:port) the CLI runs
+   * in thin-client mode against that server instead of the local db file.
+   * CRM_TEST_REMOTE_TOKEN carries the bearer token. This lets the same
+   * scenario tests exercise local and remote modes interchangeably.
+   */
+  const remoteServer = process.env.CRM_TEST_REMOTE_SERVER
+  const remoteToken = process.env.CRM_TEST_REMOTE_TOKEN ?? ''
   function run(...args: string[]): RunResult {
-    const proc = Bun.spawnSync(
-      ['bun', 'run', CRM_BIN, '--db', dbPath, ...args],
-      {
-        cwd: dir,
-        env: baseEnv,
-      },
-    )
+    const proc = remoteServer
+      ? Bun.spawnSync(['bun', 'run', CRM_BIN, ...args], {
+          cwd: dir,
+          env: {
+            ...baseEnv,
+            CRM_SERVER: remoteServer,
+            CRM_TOKEN: remoteToken,
+            CRM_INSECURE: '1',
+          },
+        })
+      : Bun.spawnSync(['bun', 'run', CRM_BIN, '--db', dbPath, ...args], {
+          cwd: dir,
+          env: baseEnv,
+        })
     return {
       stdout: proc.stdout.toString(),
       stderr: proc.stderr.toString(),
@@ -78,13 +93,21 @@ export function createTestContext(opts?: { noConfig?: boolean }) {
     env: Record<string, string>,
     ...args: string[]
   ): RunResult {
-    const proc = Bun.spawnSync(
-      ['bun', 'run', CRM_BIN, '--db', dbPath, ...args],
-      {
-        cwd: dir,
-        env: { ...baseEnv, ...env },
-      },
-    )
+    const proc = remoteServer
+      ? Bun.spawnSync(['bun', 'run', CRM_BIN, ...args], {
+          cwd: dir,
+          env: {
+            ...baseEnv,
+            ...env,
+            CRM_SERVER: remoteServer,
+            CRM_TOKEN: remoteToken,
+            CRM_INSECURE: '1',
+          },
+        })
+      : Bun.spawnSync(['bun', 'run', CRM_BIN, '--db', dbPath, ...args], {
+          cwd: dir,
+          env: { ...baseEnv, ...env },
+        })
     return {
       stdout: proc.stdout.toString(),
       stderr: proc.stderr.toString(),

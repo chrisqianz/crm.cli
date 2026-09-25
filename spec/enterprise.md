@@ -21,7 +21,8 @@ Local mode (unchanged):
 Enterprise mode (new):
   crm serve                    →  long-running daemon: DB + auth + audit + search, one process
   crm contact add ...         →  thin client, identical command surface, talks to server
-                                 (auto-remote when CRM_SERVER is set, or --remote flag)
+                                 (auto-remote when --remote, or CRM_SERVER+CRM_TOKEN
+                                  env both set, or [remote] config)
 ```
 
 Reasoning:
@@ -371,18 +372,41 @@ drive the CLI client against it.
 |---|---|---|
 | **P0** ✅ (0.5 wk) | Socket perms, hooks marker, dep audit | `bun test` green; new tests prove socket is 0600 and project hooks are inert without marker |
 | **P1** ✅ (2.5–3.5 wk) | `crm serve`: TCP+TLS, **local accounts** (argon2id, lockout, login audit rows), `users`/`tokens` tables, token issuance (hash store), connection limits, `/healthz`, systemd/Docker | `crm admin user create` + `crm login` (username/password on TTY) issues a token; wrong password increments lockout counter + audit row; bad token → `AUTH`; health endpoint answers; server survives restart with existing DB — all covered by `test/enterprise/serve.test.ts` + `auth.test.ts` |
-| **P2** (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode | All existing commands work identically in local and remote mode; scenario tests run against both; remote CLI has zero local DB access (proven by test with no `~/.crm`) |
-| **P3** (3–4 wk) | users/tokens tables, RBAC, actor threading, `version` + CAS, exit code 3 | RBAC matrix test (4 roles × read/write/admin); two concurrent writers → one wins, other gets exit 3 with current state; `crm login`/`whoami`/`logout` |
+| **P2** ✅ (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode | All existing commands work identically in local and remote mode (proven by `test/enterprise/remote.test.ts`, which diffs normalized local vs remote output for the full data surface); scenario tests run against both (`remote-scenarios.test.ts`); remote CLI has zero local DB access (proven by test with an isolated `HOME` that gains no `.crm`); RBAC enforced per-method; server-side hooks fire on remote writes |
+| **P3** (3–4 wk) | `version` column + CAS on all data rows, exit code 3 on conflict, actor threading (who-did-what on entity rows), conflict-recovery UX | Two concurrent writers → one wins, other gets exit 3 with current state; `crm contact edit` after a conflict shows the server's current values and retries; RBAC matrix test (4 roles × read/write/admin) codified as a table-driven test |
 | **P4** (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
 | **P6** (6–10 wk) | **LDAP directory integration** (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI), field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 
-Sequencing note: P1 introduces `users`/`tokens` + local password login;
-P3 adds roles/RBAC, CAS, and actor threading across all call sites. P3 and
-P4 share the write-site touch points — plan them as one pass over the same
-~20 locations. If the target customer requires directory login at go-live,
-promote LDAP from P6 to the slot right after P3 — it depends only on the
-P3 users/roles model.
+Sequencing note: P1 introduced `users`/`tokens` + local password login; P2 already
+enforces method-level RBAC (role rank vs method minimum) and writes an audit row
+per RPC write. P3 adds optimistic concurrency (CAS) and actor threading across
+the ~20 write sites; P4 extends audit to a hash chain. P3 and P4 share the
+write-site touch points — plan them as one pass over the same ~20 locations. If
+the target customer requires directory login at go-live, promote LDAP from P6
+to the slot right after P3 — it depends only on the P1/P2 users/roles model.
+
+**P2 as-built notes:**
+
+- **Activation:** data commands go remote when (in order) `--remote [addr]` is
+  given, or `CRM_SERVER` **and** `CRM_TOKEN` are both set (agent pattern), or
+  `[remote] server` is in config. A saved `crm login` session supplies the
+  **token** (and powers `admin.*`/`whoami`) but does not by itself switch
+  data commands to remote — remote is always explicit, so a machine with a
+  stored token stays local until `--remote` or `[remote]` is set.
+  `CRM_SERVER` alone (no `CRM_TOKEN`) does **not** switch data commands to
+  remote — deliberate, so developers with `CRM_SERVER` set for `crm login`
+  don't lose their local DB.
+- **`rm` in remote mode requires `--force`**: the server has no TTY to confirm.
+  Local interactive `rm` still prompts; its refusal messages are
+  byte-identical in both modes.
+- **`import` parses on the client** (CSV/JSON/`--raw`) and sends the parsed
+  records over the wire; validation, dedupe, and writes happen server-side.
+  The 1 MB frame cap is ample for v1 batch sizes.
+- **Hooks run server-side** with the server's config; a client machine's
+  project hooks do not apply to remote writes (remote = the server's policy).
+- **`admin.*`, `whoami`** accept the env-var pattern as well as a saved
+  session, so a service token can do full administration non-interactively.
 
 Known flaky test (pre-existing, verified by A/B on f9bdc95 vs 3100ca6):
 `test/db-busy-timeout.test.ts` (40 parallel writers, 5s busy_timeout) fails
@@ -410,6 +434,12 @@ with CAS; do not weaken the test in P0.
   correct, chain verifies, tamper detected
 - `test/enterprise/serve.test.ts` — boot/health/TLS/cert-reload/restart-
   persistence
+- `test/enterprise/remote.test.ts` — (P2) local-vs-remote output parity
+  across the data surface, writes landing in the server DB only, duplicate
+  rejection, rm `--force` semantics, CSV import over the wire, zero local
+  DB access (isolated HOME), RBAC per role, server-side hook rejection
+- `test/enterprise/remote-scenarios.test.ts` — (P2) a full scenario
+  (`devrel-outreach`) green against a live server via the test env hooks
 - `test/enterprise/raw-input.test.ts` — dirty free-text parses to the same
   normalized values as equivalent structured flags (golden pairs)
 

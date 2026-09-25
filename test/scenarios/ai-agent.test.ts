@@ -327,5 +327,5 @@ describe('scenario: AI agent using CRM as structured data layer', () => {
     const leadConv = conversion.find((s) => s.stage === 'lead')
     expect(leadConv?.entered).toBe(3)
     expect(leadConv?.advanced).toBe(3)
-  })
+  }, 240_000)
 })

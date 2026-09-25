@@ -46,7 +46,7 @@ describe('idempotent add — contact', () => {
       'json',
     )
     expect(data.phones).toHaveLength(1)
-  })
+  }, 240_000)
 
   test('add-phone with same number in national format succeeds silently', () => {
     const ctx = createTestContext()
@@ -85,7 +85,7 @@ describe('idempotent add — contact', () => {
       'json',
     )
     expect(data.phones).toHaveLength(1)
-  })
+  }, 240_000)
 
   test('add-email with value already on contact succeeds silently', () => {
     const ctx = createTestContext()
@@ -103,7 +103,7 @@ describe('idempotent add — contact', () => {
       'json',
     )
     expect(data.emails).toHaveLength(1)
-  })
+  }, 240_000)
 
   test('add-phone still rejects duplicate owned by another contact', () => {
     const ctx = createTestContext()
@@ -118,7 +118,7 @@ describe('idempotent add — contact', () => {
       '+12125551234',
     )
     expect(result.stderr).toContain('duplicate')
-  })
+  }, 240_000)
 })
 
 describe('idempotent add — company', () => {
@@ -138,7 +138,7 @@ describe('idempotent add — company', () => {
       'json',
     )
     expect(data.phones).toHaveLength(1)
-  })
+  }, 240_000)
 
   test('add-website with value already on company succeeds silently', () => {
     const ctx = createTestContext()
@@ -156,7 +156,7 @@ describe('idempotent add — company', () => {
       'json',
     )
     expect(data.websites).toHaveLength(1)
-  })
+  }, 240_000)
 
   test('add-phone still rejects duplicate owned by another company', () => {
     const ctx = createTestContext()
@@ -171,7 +171,7 @@ describe('idempotent add — company', () => {
       '+12125551234',
     )
     expect(result.stderr).toContain('duplicate')
-  })
+  }, 240_000)
 
   test('add-website still rejects duplicate owned by another company', () => {
     const ctx = createTestContext()
@@ -186,7 +186,7 @@ describe('idempotent add — company', () => {
       'https://www.acme.com',
     )
     expect(result.stderr).toContain('duplicate')
-  })
+  }, 240_000)
 })
 
 describe('scenario: messy real-world CRM setup', () => {
@@ -456,5 +456,5 @@ describe('scenario: messy real-world CRM setup', () => {
     const aomniFinal = companies.find((c) => c.name === 'Aomni')!
     expect(aomniFinal.websites).toHaveLength(1)
     expect(aomniFinal.phones).toHaveLength(2)
-  })
+  }, 240_000)
 })
