@@ -67,7 +67,8 @@ cleanly for the target scale.
   "db": "ok", "wal": "ok"}`. For systemd/Docker health checks.
 - **Lifecycle:** systemd unit + Dockerfile + `crm serve --install-service`
   helper. No auto-restart of sub-processes: the serve process *is* the whole
-  server (DB is a file, ONNX model loads lazily into it).
+  server (DB is a file; no runtime downloads — `crm find` is local
+  word-overlap scoring today).
 
 ## Authentication and identity
 
@@ -293,8 +294,10 @@ Remote mode removes the mount stack from the client entirely:
   target). Local mount mode remains WSL-only; that is documented, not
   blockable.
 - Air-gapped / internal distribution: prebuilt tarballs per platform +
-  optional internal npm registry. Semantic search model (ONNX) ships
-  server-side only — the client downloads nothing at runtime.
+  optional internal npm registry. The client downloads nothing at runtime —
+  `crm find` is local word-overlap scoring today (the README/architecture
+  ONNX semantic model is not implemented in code; if it lands later, the
+  model ships server-side only).
 - Prebuilt FUSE/NFS bridges ship in the release for local-mode users, so
   even local mounts stop auto-compiling on first use (build matrix work,
   phase P5).
@@ -337,8 +340,13 @@ These are defects in today's code, fixed immediately on the fork:
    `crm.toml` may only define hooks if it contains an explicit
    `hooks.enabled = true` marker; global config always works. Documented as
    "hooks are code execution; review them like you would review a Makefile".
-3. **Dependency audit** before first enterprise release (lockfile pinned,
-   no install-time network calls beyond the documented ONNX model download).
+3. **Dependency audit** before first enterprise release. Completed
+   2026-09-25: all 7 direct dependencies at their bun.lock-pinned versions
+   (`@libsql/client@0.17.2`, `commander@13.1.0`, `drizzle-orm@0.45.2`,
+   `libphonenumber-js@1.12.41`, `normalize-url@9.0.0`, `toml@3.0.0`,
+   `ulid@2.4.0`) — 0 vulnerable ranges via the npm audit endpoint. No
+   install-time or runtime network calls exist in `src/` at all (the
+   ONNX model download described in the docs is not implemented).
 
 ## Out of scope for v1
 
@@ -363,7 +371,7 @@ drive the CLI client against it.
 |---|---|---|
 | **P0** (0.5 wk) | Socket perms, hooks marker, dep audit | `bun test` green; new tests prove socket is 0600 and project hooks are inert without marker |
 | **P1** (2.5–3.5 wk) | `crm serve`: TCP+TLS, **local accounts** (argon2id, lockout, login audit rows), `users`/`tokens` tables, token issuance (hash store), connection limits, `/healthz`, systemd/Docker | `crm admin user create` + `crm login` (username/password on TTY) issues a token; wrong password increments lockout counter + audit row; bad token → `AUTH`; health endpoint answers; server survives restart with existing DB |
-| **P2** (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode, ONNX model server-side | All existing commands work identically in local and remote mode; scenario tests run against both; remote CLI has zero local DB access (proven by test with no `~/.crm`) |
+| **P2** (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode | All existing commands work identically in local and remote mode; scenario tests run against both; remote CLI has zero local DB access (proven by test with no `~/.crm`) |
 | **P3** (3–4 wk) | users/tokens tables, RBAC, actor threading, `version` + CAS, exit code 3 | RBAC matrix test (4 roles × read/write/admin); two concurrent writers → one wins, other gets exit 3 with current state; `crm login`/`whoami`/`logout` |
 | **P4** (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |

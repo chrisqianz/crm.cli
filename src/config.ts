@@ -177,20 +177,51 @@ export function loadConfig(opts: {
 }): CRMConfig {
   let config = defaultConfig()
 
-  // Resolve config file — auto-create with sensible defaults on first run
-  const configPath =
-    opts.configPath ||
-    process.env.CRM_CONFIG ||
-    findConfigFile(process.cwd()) ||
-    (() => {
-      const p = join(homedir(), '.crm', 'config.toml')
-      createDefaultConfig(p)
-      return p
-    })()
+  // Resolve config file — auto-create with sensible defaults on first run.
+  // Explicit selection (--config / CRM_CONFIG) is trusted; otherwise the
+  // nearest crm.toml found by walking up from cwd wins, and the global
+  // ~/.crm/config.toml is the fallback.
+  const globalPath = join(homedir(), '.crm', 'config.toml')
+  const explicitPath = opts.configPath || process.env.CRM_CONFIG
+
+  let configPath: string
+  if (explicitPath) {
+    configPath = explicitPath
+  } else {
+    const found = findConfigFile(process.cwd())
+    if (found) {
+      configPath = found
+    } else {
+      configPath = globalPath
+      createDefaultConfig(globalPath)
+    }
+  }
+
+  // Hooks are arbitrary code execution, and project configs are discovered
+  // by walking up from the cwd — a crm.toml checked into a hostile repo
+  // must not be able to execute commands. A project-discovered config may
+  // therefore only enable hooks with an explicit `[hooks] enabled = true`
+  // marker. Explicitly selected configs and the global config are trusted.
+  const isProjectConfig = !explicitPath && configPath !== globalPath
 
   try {
     const raw = readFileSync(configPath, 'utf-8')
     const parsed = parseTOML(raw)
+    if (parsed?.hooks && typeof parsed.hooks === 'object') {
+      const hooksEnabled = parsed.hooks.enabled === true
+      parsed.hooks.enabled = undefined
+      const hasHookEntries = Object.values(parsed.hooks).some(
+        (v) => v !== undefined,
+      )
+      if (isProjectConfig && !hooksEnabled && hasHookEntries) {
+        console.error(
+          `Warning: ignoring hooks from project config ${configPath}. ` +
+            'Hooks execute arbitrary commands — review the config and add ' +
+            '[hooks] enabled = true only if you trust it.',
+        )
+        parsed.hooks = undefined
+      }
+    }
     config = mergeConfig(config, parsed)
   } catch (_e) {
     console.error(`Warning: could not parse config file ${configPath}`)

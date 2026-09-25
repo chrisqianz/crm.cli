@@ -7,7 +7,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -35,8 +35,14 @@ function resolveAsset(name: string): string | null {
 import type { Command } from 'commander'
 
 import { generateFS } from '../export-fs'
-import { slugify } from '../fuse-json'
 import { die, getCtx } from '../lib/helpers'
+import {
+  ensurePrivateDir,
+  mountsDir,
+  pidFileFor,
+  socketPathFor,
+  socketsDir,
+} from '../lib/paths'
 
 function ensureDir(dir: string): void {
   if (!existsSync(dir)) {
@@ -129,7 +135,8 @@ async function mountDarwin(
   }
 
   // Start the daemon (runs as `crm __daemon` — works with both bun and compiled binary)
-  const socketPath = join(tmpdir(), `crm-fuse-${slugify(mp)}.sock`)
+  ensurePrivateDir(socketsDir)
+  const socketPath = socketPathFor(mp)
 
   const daemonProc = spawn(
     process.execPath,
@@ -246,7 +253,8 @@ async function mountDarwin(
   }
 
   // Write PID file (same format: line 1 = server PID, line 2 = daemon PID)
-  const pidFile = join(tmpdir(), `crm-mount-${slugify(mp)}.pid`)
+  ensurePrivateDir(mountsDir)
+  const pidFile = pidFileFor(mp)
   writeFileSync(pidFile, `${nfsProc.pid}\n${daemonProc.pid}`)
 
   console.log(`Mounted at ${mp} (NFS port ${port}, PID ${nfsProc.pid})`)
@@ -293,7 +301,8 @@ async function mountLinux(
   }
 
   // Start the daemon (runs as `crm __daemon` — works with both bun and compiled binary)
-  const socketPath = join(tmpdir(), `crm-fuse-${slugify(mp)}.sock`)
+  ensurePrivateDir(socketsDir)
+  const socketPath = socketPathFor(mp)
 
   const daemonProc = spawn(
     process.execPath,
@@ -347,7 +356,8 @@ async function mountLinux(
 
   fuseProc.unref()
 
-  const pidFile = join(tmpdir(), `crm-mount-${slugify(mp)}.pid`)
+  ensurePrivateDir(mountsDir)
+  const pidFile = pidFileFor(mp)
   writeFileSync(pidFile, `${fuseProc.pid}\n${daemonProc.pid}`)
 
   console.log(`Mounted at ${mp} (PID ${fuseProc.pid})`)
@@ -356,7 +366,7 @@ async function mountLinux(
 // ── Unmount ──
 
 async function unmountDarwin(mp: string) {
-  const pidFile = join(tmpdir(), `crm-mount-${slugify(mp)}.pid`)
+  const pidFile = pidFileFor(mp)
 
   if (existsSync(pidFile)) {
     const lines = readFileSync(pidFile, 'utf-8').trim().split('\n')
@@ -413,7 +423,7 @@ function unmountLinux(mp: string) {
     spawnSync('umount', [mp], { stdio: ['pipe', 'pipe', 'pipe'] })
   }
 
-  const pidFile = join(tmpdir(), `crm-mount-${slugify(mp)}.pid`)
+  const pidFile = pidFileFor(mp)
   if (existsSync(pidFile)) {
     const pids = readFileSync(pidFile, 'utf-8').trim().split('\n')
     for (const pid of pids) {
@@ -427,7 +437,7 @@ function unmountLinux(mp: string) {
   }
 
   // Clean up the daemon socket (not removed by kill alone)
-  const socketPath = join(tmpdir(), `crm-fuse-${slugify(mp)}.sock`)
+  const socketPath = socketPathFor(mp)
   try {
     unlinkSync(socketPath)
   } catch {
@@ -452,7 +462,7 @@ export function registerFuseCommands(program: Command) {
       const mp = mountpoint || config.mount.default_path
 
       // Check if already mounted
-      const pidFile = join(tmpdir(), `crm-mount-${slugify(mp)}.pid`)
+      const pidFile = pidFileFor(mp)
       if (existsSync(pidFile)) {
         const pids = readFileSync(pidFile, 'utf-8').trim().split('\n')
         const alive = pids.some((pid) => {

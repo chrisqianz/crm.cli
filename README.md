@@ -793,6 +793,22 @@ pre-contact-rm = "~/.crm/hooks/confirm-delete.sh"
 
 Hooks receive the entity data as JSON via stdin. Pre-hooks can abort the operation by exiting non-zero.
 
+> **Security:** hooks are arbitrary code execution, and config files are
+> discovered by walking up from the current directory. A `crm.toml` found
+> in a project — including one checked into a repo you clone — therefore
+> requires an explicit opt-in before its hooks will run:
+>
+> ```toml
+> [hooks]
+> enabled = true
+> post-contact-add = "..."
+> ```
+>
+> Review the commands before adding the marker — treat a `crm.toml` with
+> hooks like reviewing a Makefile. Explicitly selected configs
+> (`--config`, `CRM_CONFIG`) and the global `~/.crm/config.toml` are
+> trusted as-is.
+
 Available hooks:
 
 - `pre-*` / `post-*` for: `contact-add`, `contact-edit`, `contact-rm`, `company-add`, `company-edit`, `company-rm`, `deal-add`, `deal-edit`, `deal-rm`, `deal-stage-change`, `activity-add`
@@ -1255,6 +1271,10 @@ search_limit = 20               # max results for search/ virtual files
 2. **Filesystem bridge** — connects the OS filesystem layer to the daemon:
    - **macOS:** An NFS v3 server (Rust binary, auto-compiled on first mount via Cargo) that translates NFS operations to daemon socket calls. Mounted via `mount_nfs`.
    - **Linux:** A FUSE helper (C binary, auto-compiled on first mount via gcc) that translates FUSE syscalls to daemon socket calls.
+
+Both processes use user-private state: the daemon socket lives in
+`~/.crm/sockets/` (directory 0700, socket 0600) and the mount PID file in
+`~/.crm/mounts/` — not in `tmpdir()`, which is world-accessible on Linux.
 
 ### Platform Notes
 

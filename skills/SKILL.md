@@ -461,6 +461,8 @@ pre-contact-rm = "~/.crm/hooks/confirm-delete.sh"
 
 Entity data is passed as JSON on stdin. Pre-hooks abort on non-zero exit.
 
+> **Security:** a `crm.toml` discovered by walking up from the current directory (e.g. checked into a repo) only runs hooks when it explicitly sets `[hooks] enabled = true`. Explicit configs (`--config`) and the global `~/.crm/config.toml` are trusted as-is. Never add the marker to a config you have not reviewed.
+
 Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-deal-stage-change`, `{pre,post}-activity-add`.
 
 ## Tips for AI Agents

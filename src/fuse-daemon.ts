@@ -19,7 +19,7 @@
  *   Response: {...}\n
  */
 
-import { existsSync, unlinkSync } from 'node:fs'
+import { chmodSync, existsSync, unlinkSync } from 'node:fs'
 import { createServer, type Socket } from 'node:net'
 
 import { eq } from 'drizzle-orm'
@@ -1618,6 +1618,13 @@ export async function startDaemon(daemonArgs: string[]) {
   })
 
   server.listen(socketPath, () => {
+    // The daemon serves unauthenticated newline-JSON, so the socket must
+    // stay owner-only (the parent dir is 0700 via src/lib/paths.ts).
+    try {
+      chmodSync(socketPath, 0o600)
+    } catch {
+      // best effort — non-POSIX platforms
+    }
     // Signal readiness by writing to stdout
     process.stdout.write('READY\n')
   })

@@ -1,15 +1,16 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { execSync, spawnSync } from 'node:child_process'
 import {
+  existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { mountsDir } from '../src/lib/paths.ts'
 import { canMount, createTestContext, type TestContext } from './helpers.ts'
 
 // Use shell echo instead of fs.writeFileSync for NFS writes.
@@ -24,11 +25,13 @@ function writeFile(path: string, content: string) {
 // the detached crm-fuse/fuse-daemon processes survive. Without this cleanup,
 // they accumulate across runs and exhaust kernel FUSE connections.
 if (canMount && process.platform === 'linux') {
-  const pidFiles = readdirSync(tmpdir()).filter(
-    (f) => f.startsWith('crm-mount-') && f.endsWith('.pid'),
-  )
+  const pidFiles = existsSync(mountsDir)
+    ? readdirSync(mountsDir).filter(
+        (f) => f.startsWith('crm-mount-') && f.endsWith('.pid'),
+      )
+    : []
   for (const f of pidFiles) {
-    const pidPath = join(tmpdir(), f)
+    const pidPath = join(mountsDir, f)
     try {
       const pids = readFileSync(pidPath, 'utf-8').trim().split('\n')
       for (const pid of pids) {
