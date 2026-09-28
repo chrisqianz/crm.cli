@@ -998,6 +998,60 @@ then swap the file in.
 
 ---
 
+### Directory login (LDAP, P6)
+
+Connect the CRM to an existing identity provider (Active Directory, OpenLDAP,
+FreeIPA, …). The directory is the **password authority**; the CRM keeps
+authority for role and token. On first successful login a user is
+**JIT-provisioned** into `users` (`auth_source = "ldap"`); from then on each
+login refreshes the directory-sourced fields, so a group change is picked up
+on the next login.
+
+```toml
+[auth]
+default_role = "none"          # directory user in no mapped group → deny
+
+[ldap]
+enabled = true
+url = "ldaps://ldap.company.com:636"   # or ldap:// + starttls = true
+base_dn = "ou=people,dc=company,dc=com"
+bind_dn = "cn=crm-service,ou=service,dc=company,dc=com"
+bind_password_env = "CRM_LDAP_BIND_PASSWORD"   # read from the environment, never config
+user_filter = "(uid={username})"              # AD: (sAMAccountName={username})
+group_base_dn = "ou=groups,dc=company,dc=com"  # default: base_dn
+
+[ldap.roles]                          # group DN → CRM role
+"CN=Crm-Admins,OU=Groups,DC=company,DC=com" = "admin"
+"CN=Crm-Writers,OU=Groups,DC=company,DC=com" = "writer"
+```
+
+**Behaviour**
+
+- **Two-step bind** — the server binds as the service account, searches for
+  the user (escaped filter, so injection-style usernames are inert), then
+  binds as the found entry to verify the password.
+- **The directory wins** — if the username resolves in the directory, local
+  password auth is never consulted (even for a same-named local account).
+  Usernames that do not resolve in the directory keep local auth.
+- **Unreachable directory** — a clean `AUTH: directory is unreachable` error;
+  no silent fallback to local passwords, an audit row is written, and the
+  login simply fails until the directory is back. Connection hiccups retry
+  twice; wrong passwords never retry.
+- **Role from groups** — the entry's group memberships are mapped through
+  `[ldap.roles]` (highest ranked mapped group wins); no mapped group →
+  `auth.default_role` (default `none`, which can read nothing).
+- **TLS is mandatory** — plain `ldap://` without `starttls = true` refuses to
+  boot (`crm serve` exits with a clear error). `ldaps://` and StartTLS both
+  work. `CRM_ALLOW_INSECURE_LDAP=1` is a local/test-only escape hatch.
+- **Incident response** — `crm admin user disable --username <dir-user>`
+  blocks a directory user locally without touching the directory.
+
+The service-account password must be present in the server process
+environment (the env var named by `bind_password_env`) before `crm serve`
+starts — it is checked at boot alongside the rest of the `[ldap]` config.
+
+---
+
 ### Import / Export
 
 #### `crm import <entity-type> <file>`

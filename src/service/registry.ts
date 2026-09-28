@@ -83,18 +83,23 @@ const ROLE_RANK: Record<MethodRole, number> = {
   admin: 3,
 }
 
-function effectiveRole(role: string): MethodRole {
+function effectiveRole(role: string): MethodRole | null {
   if (role === 'owner' || role === 'admin') {
     return 'admin'
   }
   if (role === 'writer') {
     return 'writer'
   }
-  return 'reader'
+  if (role === 'reader') {
+    return 'reader'
+  }
+  // 'none' (and anything unrecognized) grants no data access at all
+  return null
 }
 
 export function roleAllows(minRole: MethodRole, role: string): boolean {
-  return ROLE_RANK[minRole] <= ROLE_RANK[effectiveRole(role)]
+  const eff = effectiveRole(role)
+  return eff !== null && ROLE_RANK[minRole] <= ROLE_RANK[eff]
 }
 
 export const METHODS: Record<string, MethodDef> = {

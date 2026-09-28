@@ -1,0 +1,604 @@
+import { afterAll, describe, expect, test } from 'bun:test'
+
+import { bootstrapOwner, connect, freshDb, REPO, startServer } from './helpers'
+
+/**
+ * P6: LDAP directory login against a real in-docker OpenLDAP
+ * (osixia/openldap). The directory is the password authority: the server
+ * binds as the service account, searches for the user under base_dn, then
+ * binds as the user to verify the password.
+ *
+ * The test tree:
+ *   alice → cn=crm-admins      → role admin
+ *   bob   → cn=crm-writers     → role writer
+ *   dave  → no group           → auth.default_role (none → FORBIDDEN)
+ *   eve   → local-only account (never in the directory)
+ */
+
+const LDAP_IMAGE = 'crm-ldap-test:local'
+const ADMIN_PASS = 'admin'
+const BASE = 'dc=example,dc=com'
+const PEOPLE = `ou=people,${BASE}`
+const GROUPS = `ou=groups,${BASE}`
+
+const TEST_LDIF = `dn: ${PEOPLE}
+objectClass: organizationalUnit
+ou: people
+
+dn: ${GROUPS}
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=alice,${PEOPLE}
+objectClass: inetOrgPerson
+uid: alice
+cn: Alice Dir
+sn: Dir
+mail: alice@example.com
+userPassword: alice-pw-1
+
+dn: uid=bob,${PEOPLE}
+objectClass: inetOrgPerson
+uid: bob
+cn: Bob Dir
+sn: Dir
+mail: bob@example.com
+userPassword: bob-pw-1
+
+dn: uid=dave,${PEOPLE}
+objectClass: inetOrgPerson
+uid: dave
+cn: Dave Dir
+sn: Dir
+mail: dave@example.com
+userPassword: dave-pw-1
+
+dn: cn=crm-admins,${GROUPS}
+objectClass: groupOfUniqueNames
+cn: crm-admins
+uniqueMember: uid=alice,${PEOPLE}
+
+dn: cn=crm-writers,${GROUPS}
+objectClass: groupOfUniqueNames
+cn: crm-writers
+uniqueMember: uid=bob,${PEOPLE}
+
+dn: cn=crm-service,${PEOPLE}
+objectClass: inetOrgPerson
+uid: crm-service
+cn: CRM Service
+sn: Service
+userPassword: svc-pw-1
+`
+
+function docker(args: string[]): { code: number; out: string; err: string } {
+  const r = Bun.spawnSync(['docker', ...args], { env: process.env })
+  return {
+    code: r.exitCode ?? 0,
+    out: r.stdout.toString(),
+    err: r.stderr.toString(),
+  }
+}
+
+async function waitFor(
+  fn: () => Promise<unknown>,
+  tries: number,
+  delayMs: number,
+): Promise<void> {
+  let last: unknown
+  for (let i = 0; i < tries; i++) {
+    try {
+      await fn()
+      return
+    } catch (e) {
+      last = e
+      await Bun.sleep(delayMs)
+    }
+  }
+  throw last instanceof Error ? last : new Error(String(last))
+}
+
+/** Run a docker-exec command, piping `input` to its stdin. */
+async function runLdapStream(
+  container: string,
+  cmd: string[],
+  input: string,
+): Promise<void> {
+  await new Promise<void>((resolveP, rejectP) => {
+    const proc = Bun.spawn(['docker', 'exec', '-i', container, ...cmd], {
+      env: process.env,
+      stdin: 'pipe',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    })
+    const sink = proc.stdin as unknown as {
+      write: (s: string) => void
+      close: () => void
+    }
+    sink?.write(input)
+    sink?.close()
+    let err = ''
+    let pump: Promise<void> | null = null
+    const stream = proc.stderr as unknown as
+      | ReadableStream<Uint8Array>
+      | undefined
+    const reader = stream?.getReader?.()
+    if (reader) {
+      const dec = new TextDecoder()
+      pump = (async (): Promise<void> => {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) {
+            break
+          }
+          err += dec.decode(value, { stream: true })
+        }
+      })()
+    }
+    proc.exited.then(async (code) => {
+      if (pump) {
+        await pump
+      }
+      if (code === 0) {
+        resolveP()
+      } else {
+        rejectP(
+          new Error(`${cmd[0]} failed (exit ${code}): ${err.slice(0, 300)}`),
+        )
+      }
+    })
+  })
+}
+
+interface LdapServer {
+  baseDn: string
+  bindDn: string
+  bindPassword: string
+  container: string
+  groupBaseDn: string
+  stop: () => Promise<void>
+  url: string
+}
+
+async function startLdap(): Promise<LdapServer> {
+  // Build the test directory image on first use (cached after that):
+  // osixia/openldap + an ACL granting the CRM service account read
+  // access to the tree (the default ACL is self-read only).
+  const build = await docker([
+    'build',
+    '-q',
+    '-t',
+    LDAP_IMAGE,
+    `${REPO}/deploy/ldap-test`,
+  ])
+  if (build.code !== 0) {
+    throw new Error(`docker build failed: ${build.err.slice(0, 300)}`)
+  }
+  const container = `crm-ldap-${Date.now().toString(36)}`
+  const port = 10_389 + Math.floor(Math.random() * 100)
+  const stop = async (): Promise<void> => {
+    await docker(['rm', '-f', container])
+  }
+  const up = await docker([
+    'run',
+    '-d',
+    '--name',
+    container,
+    '-p',
+    `${port}:389`,
+    '-e',
+    `LDAP_ADMIN_PASSWORD=${ADMIN_PASS}`,
+    '-e',
+    'LDAP_TLS=0',
+    '-e',
+    'LDAP_ORGANISATION=Example Inc',
+    '-e',
+    'LDAP_DOMAIN=example.com',
+    LDAP_IMAGE,
+  ])
+  if (up.code !== 0) {
+    throw new Error(`docker run failed: ${up.err.slice(0, 300)}`)
+  }
+  try {
+    await waitFor(
+      async () => {
+        const r = await docker([
+          'exec',
+          container,
+          'ldapwhoami',
+          '-x',
+          '-H',
+          'ldap://localhost',
+        ])
+        if (r.code !== 0) {
+          throw new Error('ldap not ready yet')
+        }
+      },
+      30,
+      1000,
+    )
+    // load the test tree as the container admin
+    await runLdapStream(
+      container,
+      [
+        'ldapadd',
+        '-x',
+        '-H',
+        'ldap://localhost',
+        '-D',
+        `cn=admin,${BASE}`,
+        '-w',
+        ADMIN_PASS,
+      ],
+      TEST_LDIF,
+    )
+    // wait until the service account can actually bind — the directory
+    // accepts anonymous queries slightly before the ACLs and entries
+    // needed by the CRM service account are fully usable
+    await waitFor(
+      async () => {
+        const r = await docker([
+          'exec',
+          container,
+          'ldapwhoami',
+          '-x',
+          '-H',
+          'ldap://localhost',
+          '-D',
+          'cn=crm-service,ou=people,dc=example,dc=com',
+          '-w',
+          'svc-pw-1',
+        ])
+        if (r.code !== 0) {
+          throw new Error('service account not ready yet')
+        }
+      },
+      20,
+      500,
+    )
+    return {
+      bindDn: `cn=crm-service,${PEOPLE}`,
+      bindPassword: 'svc-pw-1',
+      baseDn: PEOPLE,
+      container,
+      groupBaseDn: GROUPS,
+      url: `ldap://127.0.0.1:${port}`,
+      stop,
+    }
+  } catch (e) {
+    await stop()
+    throw e
+  }
+}
+
+/** Server config with LDAP wired to the test container. */
+function ldapConfig(dbPath: string, ldap: LdapServer, extra = ''): string {
+  return `[database]
+path = "${dbPath}"
+
+[auth]
+default_role = "none"
+
+[ldap]
+enabled = true
+url = "${ldap.url}"
+starttls = false
+base_dn = "${ldap.baseDn}"
+bind_dn = "${ldap.bindDn}"
+bind_password_env = "CRM_LDAP_BIND_PASSWORD"
+user_filter = "(uid={username})"
+group_base_dn = "${ldap.groupBaseDn}"
+
+[ldap.roles]
+"cn=crm-admins,${ldap.groupBaseDn}" = "admin"
+"cn=crm-writers,${ldap.groupBaseDn}" = "writer"
+
+${extra}
+`
+}
+
+/** Call auth.login directly (a failed login is a normal RPC error). */
+async function attemptLogin(
+  port: number,
+  username: string,
+  password: string,
+): Promise<{
+  code?: string
+  message?: string
+  role?: string
+  token?: string
+}> {
+  const c = await connect(port)
+  try {
+    const res = await c.call<{
+      token: string
+      user: { role: string; username: string }
+    }>('auth.login', { username, password })
+    return { role: res.user.role, token: res.token }
+  } catch (e) {
+    return {
+      code: (e as { code?: string }).code,
+      message: (e as Error).message,
+    }
+  } finally {
+    c.close()
+  }
+}
+
+describe('P6 LDAP: directory login', () => {
+  let ldap: LdapServer | null = null
+  let starting: Promise<LdapServer> | null = null
+
+  /**
+   * Lazy container start: the first test to need it boots the LDAP
+   * container. Test bodies carry explicit 90s timeouts, which cover the
+   * pull + boot (beforeAll would only get bun's 5s default).
+   */
+  function ensureLdap(): Promise<LdapServer> {
+    if (ldap) {
+      return Promise.resolve(ldap)
+    }
+    if (!starting) {
+      const info = Bun.spawnSync(['docker', 'info'], { env: process.env })
+      if (info.exitCode !== 0) {
+        throw new Error('docker daemon not running — start Docker Desktop')
+      }
+      starting = (async () => {
+        try {
+          const l = await startLdap()
+          ldap = l
+          return l
+        } finally {
+          starting = null
+        }
+      })()
+    }
+    return starting
+  }
+
+  afterAll(async () => {
+    await starting?.catch(() => undefined)
+    if (ldap) {
+      await ldap.stop()
+    }
+  })
+
+  test('directory user with mapped group JIT-provisions with the group role', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        // no owner bootstrap needed for a pure-ldap server, but the
+        // users table starts empty → login still works (JIT)
+        const res = await attemptLogin(server.port, 'alice', 'alice-pw-1')
+        expect(res.code, res.message).toBeUndefined()
+        expect(res.role).toBe('admin')
+
+        // the JIT row is visible to the server: token authenticates
+        const c = await connect(server.port, res.token ?? '')
+        const rows = await c.call<{ rows: Record<string, unknown>[] }>(
+          'contact.list',
+          {},
+        )
+        expect(Array.isArray(rows.rows)).toBe(true)
+        c.close()
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('wrong password → AUTH error, no fallback to local account of same name', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        const owner = await bootstrapOwner(server)
+        const c = await connect(server.port, owner.token)
+        // a LOCAL account with the SAME username — the directory must
+        // win, so the local password is never consulted
+        await c.call('admin.user.create', {
+          username: 'bob',
+          role: 'writer',
+        })
+        c.close()
+
+        const bad = await attemptLogin(server.port, 'bob', 'wrong-password')
+        expect(bad.code).toBe('AUTH')
+        expect(bad.message).not.toMatch(/local/i)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('directory user in no mapped group gets default_role none → FORBIDDEN', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        const res = await attemptLogin(server.port, 'dave', 'dave-pw-1')
+        expect(res.code, res.message).toBeUndefined()
+        expect(res.role).toBe('none')
+        // token authenticates but every data method is FORBIDDEN
+        const c = await connect(server.port, res.token ?? '')
+        let forbidden = ''
+        try {
+          await c.call('contact.list', {})
+        } catch (e) {
+          forbidden = (e as { code?: string }).code ?? ''
+        }
+        expect(forbidden).toBe('FORBIDDEN')
+        c.close()
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('injection-style username is rejected cleanly, no row created', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        const res = await attemptLogin(
+          server.port,
+          'x)(uid=*)(uid=',
+          'anything',
+        )
+        expect(res.code).toBe('AUTH')
+        expect(res.message ?? '').not.toMatch(/ldapts|InvalidFilter/i)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('unreachable directory → clean AUTH error, no local fallback', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      // ldap on a closed port; local account with same username exists
+      const l = await ensureLdap()
+      const body = ldapConfig(dbPath, l).replace(
+        `url = "${l.url}"`,
+        'url = "ldap://127.0.0.1:1"',
+      )
+      const server = await startServer(dbPath, { configBody: body })
+      try {
+        const owner = await bootstrapOwner(server)
+        const c = await connect(server.port, owner.token)
+        await c.call('admin.user.create', {
+          username: 'alice',
+          role: 'writer',
+        })
+        c.close()
+        const res = await attemptLogin(
+          server.port,
+          'alice',
+          'local-fallback-pw',
+        )
+        expect(res.code).toBe('AUTH')
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('username not in the directory falls back to local password auth', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        const owner = await bootstrapOwner(server)
+        const c = await connect(server.port, owner.token)
+        const created = await c.call<{ initial_password: string }>(
+          'admin.user.create',
+          {
+            username: 'eve',
+            role: 'writer',
+          },
+        )
+        c.close()
+        const res = await attemptLogin(
+          server.port,
+          'eve',
+          created.initial_password,
+        )
+        expect(res.code, res.message).toBeUndefined()
+        expect(res.role).toBe('writer')
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('group membership change is picked up on the next login', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        const first = await attemptLogin(server.port, 'bob', 'bob-pw-1')
+        expect(first.role).toBe('writer')
+        // promote bob into crm-admins
+        const mod = `dn: cn=crm-admins,${GROUPS}\nchangetype: modify\nadd: uniqueMember\nuniqueMember: uid=bob,${PEOPLE}\n`
+        await runLdapStream(
+          (await ensureLdap()).container,
+          [
+            'ldapmodify',
+            '-x',
+            '-H',
+            'ldap://localhost',
+            '-D',
+            `cn=admin,${BASE}`,
+            '-w',
+            ADMIN_PASS,
+          ],
+          mod,
+        )
+        const second = await attemptLogin(server.port, 'bob', 'bob-pw-1')
+        expect(second.role).toBe('admin')
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 120_000)
+
+  test('disabled directory user is rejected even with a valid password', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+      })
+      try {
+        // bootstrap first, while the users table is still empty
+        const owner = await bootstrapOwner(server)
+        const ok = await attemptLogin(server.port, 'alice', 'alice-pw-1')
+        expect(ok.code).toBeUndefined()
+        // disable the JIT row locally (incident response)
+        const c = await connect(server.port, owner.token)
+        await c.call('admin.user.disable', { username: 'alice' })
+        c.close()
+        const denied = await attemptLogin(server.port, 'alice', 'alice-pw-1')
+        expect(denied.code).toBe('AUTH')
+        expect(denied.message).toMatch(/disabled/)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+})

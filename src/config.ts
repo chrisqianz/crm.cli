@@ -10,6 +10,11 @@ export interface CRMConfig {
     lockout_threshold: number
     lockout_minutes: number
     password_min_length: number
+    /**
+     * P6: role assigned to a JIT-provisioned directory user whose group
+     * membership maps to nothing. "none" (default) = deny everything.
+     */
+    default_role: string
   }
   /**
    * P5 litestream backup. When `destination` is set (local path or
@@ -21,6 +26,23 @@ export interface CRMConfig {
   database: { path: string }
   defaults: { format: string }
   hooks: Record<string, string>
+  /**
+   * P6 LDAP directory integration. When `enabled`, usernames that resolve
+   * in the directory authenticate against it (two-step bind); local
+   * accounts whose username does not resolve keep local password auth.
+   */
+  ldap: {
+    enabled: boolean
+    url: string
+    starttls: boolean
+    base_dn: string
+    bind_dn: string
+    bind_password_env: string
+    user_filter: string
+    group_base_dn: string
+    /** group DN (exact, case-insensitive) → CRM role */
+    roles: Record<string, string>
+  }
   mount: {
     default_path: string
     readonly: boolean
@@ -68,6 +90,18 @@ function defaultConfig(): CRMConfig {
       lockout_threshold: 5,
       lockout_minutes: 15,
       password_min_length: 12,
+      default_role: 'none',
+    },
+    ldap: {
+      enabled: false,
+      url: '',
+      starttls: false,
+      base_dn: '',
+      bind_dn: '',
+      bind_password_env: '',
+      user_filter: '(uid={username})',
+      group_base_dn: '',
+      roles: {},
     },
     hooks: {},
     mount: {
@@ -177,6 +211,31 @@ function mergeConfig(
       ...(override.auth.password_min_length
         ? { password_min_length: override.auth.password_min_length }
         : {}),
+      ...(override.auth.default_role
+        ? { default_role: override.auth.default_role }
+        : {}),
+    }
+  }
+  if (override.ldap) {
+    result.ldap = {
+      ...result.ldap,
+      ...(override.ldap.enabled ? { enabled: true } : {}),
+      ...(override.ldap.url ? { url: override.ldap.url } : {}),
+      ...(override.ldap.starttls ? { starttls: true } : {}),
+      ...(override.ldap.base_dn ? { base_dn: override.ldap.base_dn } : {}),
+      ...(override.ldap.bind_dn ? { bind_dn: override.ldap.bind_dn } : {}),
+      ...(override.ldap.bind_password_env
+        ? { bind_password_env: override.ldap.bind_password_env }
+        : {}),
+      ...(override.ldap.user_filter
+        ? { user_filter: override.ldap.user_filter }
+        : {}),
+      ...(override.ldap.group_base_dn
+        ? { group_base_dn: override.ldap.group_base_dn }
+        : {}),
+    }
+    if (override.ldap.roles) {
+      result.ldap.roles = { ...result.ldap.roles, ...override.ldap.roles }
     }
   }
   return result

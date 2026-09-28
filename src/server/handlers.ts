@@ -7,6 +7,7 @@ import type { User } from '../drizzle-schema'
 import * as schema from '../drizzle-schema'
 import { auditMeta, auditSnapshot, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
+import { openDirectory, roleForGroups } from '../lib/ldap'
 import {
   generatePassword,
   generateToken,
@@ -126,6 +127,37 @@ async function authLogin(
 ): Promise<AuthResult> {
   const username = strParam(params, 'username')
   const password = strParam(params, 'password')
+
+  // P6: when the directory is configured it wins for usernames that
+  // resolve in it — including a same-named local account. A directory
+  // outage is a hard AUTH error (no silent fallback to local passwords).
+  if (config.ldap.enabled) {
+    try {
+      const dir = openDirectory(config)
+      try {
+        const entry = await dir.lookupUser(username)
+        if (entry) {
+          return directoryLogin(db, config, ctx, dir, username, password, entry)
+        }
+      } finally {
+        await dir.close()
+      }
+    } catch {
+      await recordAudit(db, {
+        actor_id: '',
+        actor_name: username,
+        action: 'auth.login-failed',
+        source: 'rpc',
+        ip: ctx.ip,
+        after_json: JSON.stringify({ reason: 'ldap-unreachable', username }),
+      }).catch(() => undefined)
+      throw new ServerError(
+        'AUTH',
+        'directory is unreachable — login is unavailable until it is back',
+      )
+    }
+  }
+
   const u = await findUser(db, username)
 
   const fail = async (
@@ -211,6 +243,120 @@ async function authLogin(
     identity: { id: u.id, username: u.username, role: u.role },
     result: { token, user: publicUser(u) },
   }
+}
+
+/**
+ * P6: directory login — two-step bind, JIT provisioning, group→role.
+ * A wrong password is a plain AUTH error (no lockout accounting: the
+ * directory owns its own lockout policy; once the JIT row exists the
+ * standard lockout applies to local-mode writes, not to this path).
+ */
+async function directoryLogin(
+  db: DB,
+  config: CRMConfig,
+  ctx: { bootstrapCode: string | null; ip: string },
+  dir: LdapDirectoryLike,
+  username: string,
+  password: string,
+  entry: LdapUserLike,
+): Promise<AuthResult> {
+  const ok = await dir.verifyPassword(entry.dn, password)
+  if (!ok) {
+    await recordAudit(db, {
+      actor_id: '',
+      actor_name: username,
+      action: 'auth.login-failed',
+      source: 'rpc',
+      ip: ctx.ip,
+      after_json: JSON.stringify({
+        reason: 'directory-bad-password',
+        username,
+      }),
+    }).catch(() => undefined)
+    throw new ServerError('AUTH', 'invalid credentials')
+  }
+
+  const existing = await findUser(db, username)
+  // disabled_at is enforced locally even for directory users (incident
+  // response without touching the directory)
+  if (existing?.disabled_at) {
+    throw new ServerError('AUTH', 'account is disabled')
+  }
+
+  const groupDns = await dir.groupDns(entry.dn)
+  const role = roleForGroups(config, groupDns)
+
+  let user: User
+  if (existing) {
+    // refresh directory-sourced fields (role can follow group changes)
+    await db
+      .update(schema.users)
+      .set({
+        auth_source: 'ldap',
+        ldap_dn: entry.dn,
+        display_name: entry.displayName || null,
+        email: entry.email || null,
+        role,
+        failed_attempts: 0,
+        locked_until: null,
+      })
+      .where(eq(schema.users.id, existing.id))
+    const refreshed = await findUser(db, username)
+    if (!refreshed) {
+      throw new ServerError('INTERNAL', 'user row vanished after update')
+    }
+    user = refreshed
+  } else {
+    await db.insert(schema.users).values({
+      id: `usr_${ulid()}`,
+      username,
+      display_name: entry.displayName || null,
+      email: entry.email || null,
+      auth_source: 'ldap',
+      password_hash: null,
+      ldap_dn: entry.dn,
+      role,
+      failed_attempts: 0,
+      locked_until: null,
+      created_at: new Date().toISOString(),
+      disabled_at: null,
+    })
+    const created = await findUser(db, username)
+    if (!created) {
+      throw new ServerError('INTERNAL', 'JIT provisioning failed')
+    }
+    user = created
+  }
+
+  await recordAudit(db, {
+    actor_id: user.id,
+    actor_name: user.username,
+    action: 'auth.login',
+    source: 'rpc',
+    ip: ctx.ip,
+    entity_type: 'user',
+    entity_id: user.id,
+    after_json: JSON.stringify({
+      auth_source: 'ldap',
+      role,
+      groups: groupDns.length,
+    }),
+  })
+  const token = await issueToken(db, user.id, `session-${ulid()}`, null)
+  return {
+    identity: { id: user.id, username: user.username, role: user.role },
+    result: { token, user: publicUser(user) },
+  }
+}
+
+interface LdapDirectoryLike {
+  groupDns(memberDn: string): Promise<string[]>
+  verifyPassword(dn: string, password: string): Promise<boolean>
+}
+interface LdapUserLike {
+  displayName: string
+  dn: string
+  email: string
 }
 
 async function authToken(

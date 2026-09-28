@@ -4,6 +4,7 @@ import { loadConfig } from '../config'
 import { openDB } from '../db'
 import * as schema from '../drizzle-schema'
 import { die, gConfig, gDb } from '../lib/helpers'
+import { validateLdapConfig } from '../lib/ldap'
 import {
   configPathFor,
   parseDestination,
@@ -35,6 +36,13 @@ export function registerServeCommand(program: Command): void {
         key?: string
       }) => {
         const config = loadConfig({ configPath: gConfig, dbPath: gDb })
+        // P6: an enabled [ldap] section must be fully valid before we
+        // serve — a broken directory config is a boot failure, not a
+        // runtime surprise.
+        const ldapErr = validateLdapConfig(config)
+        if (ldapErr) {
+          die(`Error: ${ldapErr}`)
+        }
         const db = await openDB(config.database.path)
         const users = await db
           .select({ id: schema.users.id })

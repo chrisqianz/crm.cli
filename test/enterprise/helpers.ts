@@ -25,8 +25,16 @@ export interface TestServer {
  */
 export async function startServer(
   dbPath: string,
-  opts?: { configPath?: string },
+  opts?: { configPath?: string; configBody?: string },
 ): Promise<TestServer> {
+  let configPath = opts?.configPath
+  if (opts?.configBody !== undefined) {
+    configPath = join(
+      mkdtempSync(join(tmpdir(), 'crm-serve-cfg-')),
+      'server.toml',
+    )
+    require('node:fs').writeFileSync(configPath, opts.configBody)
+  }
   const proc = spawn(
     'bun',
     ['run', CRM, 'serve', '--port', '0', '--db', dbPath],
@@ -36,7 +44,13 @@ export async function startServer(
       env: {
         ...process.env,
         NO_COLOR: '1',
-        CRM_CONFIG: opts?.configPath ?? '',
+        // in-docker LDAP (P6 tests) speaks plain ldap:// on a loopback
+        // port; production servers must use ldaps:// or StartTLS
+        CRM_ALLOW_INSECURE_LDAP: '1',
+        // service-account password for the P6 test directory (the real
+        // deployment reads this from the environment, never config)
+        CRM_LDAP_BIND_PASSWORD: 'svc-pw-1',
+        CRM_CONFIG: configPath ?? '',
       },
     },
   )

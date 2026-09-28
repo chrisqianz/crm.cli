@@ -392,7 +392,7 @@ drive the CLI client against it.
 | **P3** ✅ (3–4 wk) | `version` column + CAS on all data rows, exit code 3 on conflict, actor threading (who-did-what on entity rows), conflict-recovery UX | Two concurrent writers → one wins, other gets exit 3 with current state; `crm contact edit` after a conflict shows the server's current values and retries; RBAC matrix test (4 roles × read/write/admin) codified as a table-driven test — all proven by `test/cas.test.ts` + `test/enterprise/concurrency.test.ts` + `test/enterprise/rbac.test.ts` |
 | **P4** ✅ (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** ✅ (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
-| **P6** (6–10 wk) | **LDAP directory integration** (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI), field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
+| **P6** (6–10 wk) | **LDAP directory integration** ✅ (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI); field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 
 Sequencing note: P1 introduced `users`/`tokens` + local password login; P2 already
 enforces method-level RBAC (role rank vs method minimum) and writes an audit row
@@ -569,6 +569,47 @@ the CAS machinery (below) makes write-conflict retry a first-class flow.
   mirror install doc. The DR exit criterion is testable now: kill the
   server, restore from the replica, `audit verify` passes on the
   restored file (`test/enterprise/backup.test.ts`).
+
+## LDAP directory login (P6, as-built)
+
+The directory is the **password authority**; the CRM `users` table remains the
+authority for role and token. Flow on every `auth.login` when `[ldap] enabled`:
+
+1. **Service-account search** — bind as `bind_dn` (password read from the env
+   var named by `bind_password_env`, never from config), search `base_dn` with
+   the escaped `user_filter` (default `(uid={username})`). The filter is built
+   with `ldapts.escapeFilter`, so injection-style usernames can never break
+   out of it.
+2. **User verification** — bind as the found entry with the presented password.
+   A clean `InvalidCredentialsError` → `AUTH` (no local fallback, even when a
+   same-named local account exists). Any *other* failure (connection drop, TLS
+   error) → `AUTH: directory is unreachable`, with an audit row
+   `auth.login-failed { reason: "ldap-unreachable" }`. Connection-layer errors
+   retry twice with backoff; authentication failures never retry.
+3. **Role from groups** — the entry's group memberships are read from
+   `group_base_dn` (AD-style `member`, plus `uniqueMember`) and mapped through
+   `[ldap.roles]` (highest ranked mapped group wins); no mapped group →
+   `auth.default_role` (default `none`, which grants **no** data access).
+
+- **JIT provisioning** — first successful directory login creates the row
+  (`auth_source = "ldap"`, `ldap_dn` recorded, username/display/email from the
+  entry, `password_hash = NULL`). Each subsequent login refreshes the
+  directory-sourced fields, so a group change is picked up on the next login.
+- **Local disable is authoritative** — `admin.user.disable` on a directory user
+  is enforced locally (`disabled_at`), giving incident response without
+  touching the directory.
+- **TLS** — plain `ldap://` without `starttls = true` is refused **at boot**
+  (`crm serve` fails to start). `ldaps://` and StartTLS both work. An explicit
+  `CRM_ALLOW_INSECURE_LDAP=1` escape hatch exists for local/in-docker test
+  directories only.
+- **`none` is a real role** — `roleAllows` now treats `none` (and any
+  unrecognized role) as rank 0, below `reader`, so a default-role-`none` user
+  gets `FORBIDDEN` on every data method.
+- Library: `ldapts`. No YAML/extra deps; config merges through the existing
+  TOML `[ldap]` / `[ldap.roles]` sections.
+
+Remaining P6 items (not yet built): field-level column encryption,
+data-subject export/delete, token expiry policy, optional OIDC device-code.
 
 ## Test additions (spec-first, before each phase's code)
 
