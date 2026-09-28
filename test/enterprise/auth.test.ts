@@ -306,6 +306,60 @@ describe('crm auth (P1)', () => {
     admin2.close()
   })
 
+  /**
+   * A directory matches uid ignoring case (LDAP caseIgnoreMatch), humans
+   * type "Alice", and SQLite's UNIQUE is case-sensitive — three different
+   * notions of the same name. Before usernames were normalized at every
+   * entry point, `disable` on "alice" left "ALICE" as a live account.
+   */
+  test('a disabled account stays disabled whichever spelling logs in', async () => {
+    await setUp()
+    const admin = await connect(port, owner!.token)
+    const created = await admin.call<{
+      user: { username: string }
+      initial_password: string
+    }>('admin.user.create', {
+      username: 'Casey',
+      role: 'reader',
+    })
+    expect(created.user.username).toBe('casey')
+    // one account, so an admin's "CASEY" disables the right one
+    await admin.call('admin.user.disable', { username: 'CASEY' })
+    admin.close()
+
+    for (const spelling of ['casey', 'CASEY', 'Casey', '  cAsEy  ']) {
+      await expectLoginFail(port, spelling, created.initial_password)
+    }
+  })
+
+  test('a second spelling is a conflict, not a second account', async () => {
+    await setUp()
+    const admin = await connect(port, owner!.token)
+    await admin.call('admin.user.create', { username: 'dupe', role: 'reader' })
+    let code = 'created'
+    try {
+      await admin.call('admin.user.create', {
+        username: 'DUPE',
+        role: 'admin',
+      })
+    } catch (e) {
+      code = (e as { code?: string }).code ?? '?'
+    }
+    admin.close()
+    expect(code).toBe('CONFLICT')
+
+    const listed = await connect(port, owner!.token)
+    const all = await listed.call<{
+      users: { role: string; username: string }[]
+    }>('admin.user.list', {})
+    listed.close()
+    const spellings = all.users.filter(
+      (u) => u.username.toLowerCase() === 'dupe',
+    )
+    expect(spellings.length).toBe(1)
+    expect(spellings[0]?.role).toBe('reader')
+  })
+
   test('admin actions are audited', async () => {
     await setUp()
     const admin = await connect(port, owner!.token)
