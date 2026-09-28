@@ -6,33 +6,55 @@
 
 function prompt(query: string, secret: boolean): Promise<string> {
   process.stdout.write(query)
+  const decoder = new TextDecoder()
   let out = ''
   return new Promise((resolve, reject) => {
+    // Iterate code points, not bytes: a chunk that carries a multi-byte
+    // character (or arrives as a paste) used to be decoded once per byte, so a
+    // pasted "admin\n" came out as "adminadminadmin…", and a non-ASCII answer
+    // was silently dropped.
     const onData = (d: Buffer) => {
-      for (const byte of d) {
-        if (byte === 13 || byte === 10) {
+      for (const ch of decoder.decode(d, { stream: true })) {
+        if (ch === '\r' || ch === '\n') {
           cleanup()
           process.stdout.write('\n')
           resolve(out)
-        } else if (byte === 3) {
+          return
+        }
+        if (ch === '\u0003') {
           // Ctrl-C
           cleanup()
           process.stdout.write('\n')
           reject(new Error('aborted'))
-        } else if (secret) {
-          if (byte === 127 || byte === 8) {
-            out = out.slice(0, -1)
-          } else if (byte >= 32 && byte < 127) {
-            out += String.fromCharCode(byte)
+          return
+        }
+        if (ch === '\x7f' || ch === '\b') {
+          out = out.slice(0, -1)
+          if (!secret) {
+            process.stdout.write('\b \b')
           }
-        } else {
-          out += d.toString('utf8').replace(/[\r\n]/g, '')
+          continue
+        }
+        if (ch < ' ') {
+          // Tabs, escapes and arrow keys are not part of an answer.
+          continue
+        }
+        out += ch
+        if (!secret) {
+          // Raw mode switched the terminal's own echo off, so an answer you
+          // cannot see looks exactly like a frozen terminal.
+          process.stdout.write(ch)
         }
       }
     }
     const cleanup = () => {
       process.stdin.off('data', onData)
       process.stdin.setRawMode?.(false)
+      // resume() below put stdin in flowing mode, and a terminal stdin keeps
+      // the event loop alive forever. Without pausing it the command prints
+      // its answer, saves the session, and then sits there with a blinking
+      // cursor instead of handing the shell back.
+      process.stdin.pause()
     }
     process.stdin.setRawMode?.(true)
     process.stdin.on('data', onData)
