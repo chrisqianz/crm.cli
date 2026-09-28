@@ -105,6 +105,8 @@ export const auditLog = sqliteTable('audit_log', {
   after_json: text('after_json'),
   source: text('source').notNull(),
   ip: text('ip'),
+  prev_hash: text('prev_hash').notNull().default(''),
+  row_hash: text('row_hash').notNull().default(''),
 })
 
 export type AuditRow = InferSelectModel<typeof auditLog>

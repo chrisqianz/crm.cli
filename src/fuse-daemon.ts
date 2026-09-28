@@ -37,6 +37,7 @@ import {
   LLM_TXT,
   slugify,
 } from './fuse-json'
+import { auditEntityRow, recordAudit } from './lib/audit'
 import {
   getOrCreateCompanyId,
   parseCasVersion,
@@ -1073,19 +1074,67 @@ async function handleWrite(
   }
 
   if (p.startsWith('contacts/')) {
-    return await writeContact(db, config, p.slice('contacts/'.length), data)
+    return await auditedFuseWrite(db, 'contact', p, () =>
+      writeContact(db, config, p.slice('contacts/'.length), data),
+    )
   }
   if (p.startsWith('companies/')) {
-    return await writeCompany(db, config, p.slice('companies/'.length), data)
+    return await auditedFuseWrite(db, 'company', p, () =>
+      writeCompany(db, config, p.slice('companies/'.length), data),
+    )
   }
   if (p.startsWith('deals/')) {
-    return await writeDeal(db, config, p.slice('deals/'.length), data)
+    return await auditedFuseWrite(db, 'deal', p, () =>
+      writeDeal(db, config, p.slice('deals/'.length), data),
+    )
   }
   if (p.startsWith('activities/')) {
-    return await writeActivity(db, config, p.slice('activities/'.length), data)
+    return await auditedFuseWrite(db, 'activity', p, () =>
+      writeActivity(db, config, p.slice('activities/'.length), data),
+    )
   }
 
   return { error: 'EPERM' }
+}
+
+/**
+ * P4: the FUSE document write path lands in the same audit chain
+ * (source=fuse) with before/after row snapshots. The entity id comes
+ * from the document filename.
+ */
+async function auditedFuseWrite(
+  db: DB,
+  entityType: string,
+  p: string,
+  write: () => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  const file = p.split('/').pop() ?? ''
+  const entityId = extractId(file)
+  const before =
+    entityId === null
+      ? null
+      : JSON.stringify(await auditEntityRow(db, entityType, entityId))
+  const result = await write()
+  if (result.ok && entityId !== null) {
+    try {
+      const after = JSON.stringify(
+        await auditEntityRow(db, entityType, entityId),
+      )
+      await recordAudit(db, {
+        action: `fuse.write.${entityType}`,
+        actor_id: 'fuse',
+        actor_name: 'fuse',
+        source: 'fuse',
+        entity_type: entityType,
+        entity_id: entityId,
+        before_json: before,
+        after_json: after,
+      })
+    } catch {
+      // an audit failure must not fail the write
+    }
+  }
+  return result
 }
 
 async function writeContact(

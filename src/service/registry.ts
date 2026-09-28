@@ -10,6 +10,7 @@
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { activityList, activityLog } from './activity'
+import { auditExport, auditList, auditVerify } from './audit'
 import {
   companyAdd,
   companyEdit,
@@ -124,6 +125,10 @@ export const METHODS: Record<string, MethodDef> = {
   // ── activity ──
   'activity.log': { minRole: 'writer', write: true, fn: activityLog },
   'activity.list': { minRole: 'reader', write: false, fn: activityList },
+  // ── audit (P4: hash chain; v1 role-level — every role can read) ──
+  'audit.list': { minRole: 'reader', write: false, fn: auditList },
+  'audit.verify': { minRole: 'reader', write: false, fn: auditVerify },
+  'audit.export': { minRole: 'reader', write: false, fn: auditExport },
   // ── search / index ──
   'search.search': { minRole: 'reader', write: false, fn: searchFts },
   'search.find': { minRole: 'reader', write: false, fn: findSemantic },

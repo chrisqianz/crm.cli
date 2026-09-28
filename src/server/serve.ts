@@ -6,9 +6,10 @@ import tls, { type TLSSocket } from 'node:tls'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
+import { recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import { certsDir, ensurePrivateDir } from '../lib/paths'
-import { handleAuth, handleCommand, recordAudit, ServerError } from './handlers'
+import { handleAuth, handleCommand, ServerError } from './handlers'
 
 export interface ServeOptions {
   /** Present only while the users table is empty at boot. */

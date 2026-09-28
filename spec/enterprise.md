@@ -212,16 +212,32 @@ Enterprise mode replaces this with compare-and-set:
   `actor_name`, `action` (e.g. `contact.add`, `deal.stage-change`,
   `import.batch`), `entity_type`, `entity_id`, `before_json` (full snapshot,
   null on insert), `after_json`, `source` (`cli-local` / `rpc` / `fuse`),
-  `ip`.
-- **Hash chain:** each row stores `prev_hash` (sha256 of the previous
-  row_hash) and its own `row_hash`. Tampering with row N breaks every row
-  after N. Cheap, verifiable offline, no external store needed.
-- Every mutation goes through one `audit(db, actor, action, before, after)`
-  helper next to the same ~20 write sites as RBAC — built in the same pass,
-  not a bolt-on.
-- `crm audit list --since ... --actor ... --entity ...` and
-  `crm audit verify` (walks the chain) round it out. Export is just
-  `--format json`; retention policy is operational (WAL backup archives
+  `ip`, `prev_hash`, `row_hash`.
+- **Hash chain (as-built):** `row_hash` = SHA-256 over the row's canonical
+  pipe-joined content (`seq|at|actor_id|actor_name|action|entity_type|
+  entity_id|before_json|after_json|source|ip|prev_hash`, nulls as `''`);
+  `prev_hash` = the previous chained row's `row_hash`; the first chained row
+  points at the genesis (64 zeros). Rows written before P4 (empty hashes)
+  are "legacy": `verify` reports their count but excludes them from chain
+  validation, so old databases upgrade cleanly. The append runs in a
+  write transaction (read-last-hash + insert under one lock) so concurrent
+  writers cannot fork the chain.
+- Every mutation goes through one audit funnel per transport, all calling
+  the same `recordAudit` (hash chain) + snapshot helpers:
+  - **remote/RPC** — the server's registry handler (one funnel for all
+    ~20 write methods); `before`/`after` snapshots captured around the
+    service call.
+  - **local** — the CLI dispatch funnel audits every registry write method
+    (`source = cli-local`, actor = OS user).
+  - **FUSE** — the daemon's document-write path audits `fuse.write.*`
+    (actor = `fuse`).
+  A failed audit record never fails the data write (best-effort, logged).
+  The acting user is injected into write-method params server-side; read
+  methods never receive it (so `audit list --actor` filters by name).
+- `crm audit list --limit --actor --action --entity --since` and
+  `crm audit verify` (walks the chain, exit 1 + first broken seq on
+  tamper) round it out. `crm audit export` dumps the full chain in
+  table/json/csv/tsv; retention policy is operational (WAL backup archives
   retain history).
 - Note: local mode also writes audit rows (actor = OS user, source =
   `cli-local`) — the habit and the table shape are identical across modes.
@@ -374,7 +390,7 @@ drive the CLI client against it.
 | **P1** ✅ (2.5–3.5 wk) | `crm serve`: TCP+TLS, **local accounts** (argon2id, lockout, login audit rows), `users`/`tokens` tables, token issuance (hash store), connection limits, `/healthz`, systemd/Docker | `crm admin user create` + `crm login` (username/password on TTY) issues a token; wrong password increments lockout counter + audit row; bad token → `AUTH`; health endpoint answers; server survives restart with existing DB — all covered by `test/enterprise/serve.test.ts` + `auth.test.ts` |
 | **P2** ✅ (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode | All existing commands work identically in local and remote mode (proven by `test/enterprise/remote.test.ts`, which diffs normalized local vs remote output for the full data surface); scenario tests run against both (`remote-scenarios.test.ts`); remote CLI has zero local DB access (proven by test with an isolated `HOME` that gains no `.crm`); RBAC enforced per-method; server-side hooks fire on remote writes |
 | **P3** ✅ (3–4 wk) | `version` column + CAS on all data rows, exit code 3 on conflict, actor threading (who-did-what on entity rows), conflict-recovery UX | Two concurrent writers → one wins, other gets exit 3 with current state; `crm contact edit` after a conflict shows the server's current values and retries; RBAC matrix test (4 roles × read/write/admin) codified as a table-driven test — all proven by `test/cas.test.ts` + `test/enterprise/concurrency.test.ts` + `test/enterprise/rbac.test.ts` |
-| **P4** (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
+| **P4** ✅ (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
 | **P6** (6–10 wk) | **LDAP directory integration** (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI), field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 
@@ -441,6 +457,42 @@ the CAS machinery (below) makes write-conflict retry a first-class flow.
   owner reuses the bootstrap token (owner cannot be provisioned via
   `admin.user.create`), the other three roles are provisioned per row.
 
+**P4 as-built notes:**
+
+- **Chain shape**: `row_hash` covers the row's own content **and**
+  `prev_hash`, so a tampered row N breaks at N (content mismatch) and the
+  chain walk stops there with the first broken seq — later rows are not
+  reported individually. `verify` exits 1 on tamper, 0 on intact, and
+  prints `OK: audit chain intact — N row(s) verified; genesis seq K;
+  M legacy row(s) before the chain` when applicable.
+- **Append under a write transaction**: libsql's local client exposes no
+  `lastInsertRowid` on transaction results, so the row is read back inside
+  the same `write` transaction (matched by at/action/prev_hash) to get its
+  `seq` before the hash is computed and stored. Transaction mode is
+  `write` (libsql has no `exclusive`); the write lock is what serializes
+  concurrent chain appends.
+- **Snapshots** use shared helpers (`auditMeta`/`auditSnapshot`/
+  `auditEntityRow` in `src/lib/audit.ts`): insert → `before_json` null,
+  `after_json` = created row; delete → `after_json` null; edit → both;
+  batch/meta writes (import, index rebuild) carry the operation result
+  instead of an entity row.
+- **Actor injection is write-only**: the server injects
+  `actor = identity.username` into write-method params (services record
+  `updated_by`); read methods get raw params — this is what lets
+  `audit list --actor <name>` filter by actor name instead of being
+  shadowed by the caller's identity (a P4 bug caught by the reader test:
+  the injected actor made every remote `audit list` return the caller's
+  own rows only).
+- **Migration hardening**: `migrateSchema` skips the ALTER pass entirely
+  on a freshly created, empty database (SCHEMA_SQL already has every
+  column) — an exclusive-lock ALTER during 40 parallel first-writes was
+  head-of-line-blocking the bootstrap DDL (SQLITE_BUSY); schema init
+  statements now also run through a `busyExec` retry with backoff.
+- **Reads**: `audit list` (newest first, default limit 50, filters
+  actor/action/entity/since), `audit verify`, `audit export` (full chain,
+  table/json/csv/tsv) are all `reader`+ methods; a remote client renders
+  them locally (same as every other command).
+
 ## Test additions (spec-first, before each phase's code)
 
 - `test/enterprise/auth.test.ts` — auth handshake, wrong token, expired
@@ -458,7 +510,14 @@ the CAS machinery (below) makes write-conflict retry a first-class flow.
   moment: exactly one succeeds; loser gets exit 3 + current version;
   retry-with-new-version succeeds
 - `test/enterprise/audit.test.ts` — one row per mutation, before/after
-  correct, chain verifies, tamper detected
+  correct, chain verifies, tamper detected (content edit → seq reported,
+  row deletion → chain break), legacy rows tolerated, local-mode rows
+  (`source=cli-local`, actor = OS user), FUSE daemon writes audited
+  (`source=fuse`), reader-role remote `audit list/verify/export` access
+- `test/audit-commands.test.ts` — `audit list` output + filters
+  (`--limit/--actor/--action/--entity/--since`), JSON shape, `verify`
+  exit codes (0 intact / 1 tampered, first broken seq), `export` json/csv
+  parity
 - `test/enterprise/serve.test.ts` — boot/health/TLS/cert-reload/restart-
   persistence
 - `test/enterprise/remote.test.ts` — (P2) local-vs-remote output parity

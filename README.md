@@ -227,6 +227,9 @@ records over the wire; validation and writes happen server-side.
   `--version`, last write wins. Every write (CLI, RPC, or FUSE document)
   bumps `version` and records `updated_by` (the acting user; null in
   local single-user mode). See [Exit Codes](#exit-codes).
+- **Audit**: every mutation — CLI (local or remote), RPC, admin, or FUSE —
+  writes exactly one row to a hash-chained `audit_log`; `crm audit
+  verify` detects tampering. See [Audit](#audit).
 - FUSE mounts and NFS export stay local-only (the server exposes RPC,
 not filesystems).
 - `crm admin token create` is how you issue an agent's service token;
@@ -237,7 +240,8 @@ Security model: passwords are **argon2id** (m=19 MiB, t=2, p=1); 5 failed
 logins lock the account for 15 minutes (`[auth] lockout_*`); tokens are
 stored **hashed only** (SHA-256) — the raw value is shown exactly once and
 can be revoked or expired; every login (success or failure), every write,
-and every admin action writes an `audit_log` row.
+and every admin action writes an `audit_log` row into a SHA-256 hash chain
+(see [Audit](#audit)).
 
 ### Server config (`crm.toml` on the server host)
 
@@ -878,6 +882,73 @@ crm report lost --period 30d
 ```
 
 Both reports include a `notes` field with any notes attached via `crm deal move --note`.
+
+---
+
+### Audit
+
+Every mutation — a CLI write (local **or** remote), an RPC write, an admin
+action, or a FUSE document write — lands as exactly one row in
+`audit_log`, chained with a SHA-256 hash:
+
+- `prev_hash` = the previous row's `row_hash` (the first row points at the
+  genesis, 64 zeros)
+- `row_hash` = SHA-256 over the row's content **including** `prev_hash`
+
+Tampering with any row breaks that row's content hash and the next row's
+link. Rows written before the chain existed (empty hashes) are "legacy":
+`verify` reports their count but never breaks on them.
+
+| source      | Meaning                                      |
+| ----------- | -------------------------------------------- |
+| `cli-local` | Local-mode CLI write (actor = OS user)       |
+| `rpc`       | Remote write (actor = the acting user)       |
+| `fuse`      | FUSE document write (actor = `fuse`)         |
+
+Where the target entity is known, the row carries `before_json` /
+`after_json` snapshots (insert → no before; delete → no after).
+Audit reads are available to every role (`reader` and above); a failed
+audit write never fails the data write itself.
+
+#### `crm audit list`
+
+```bash
+# Recent rows, newest first (default limit 50)
+crm audit list
+
+# Filter
+crm audit list --actor alice
+crm audit list --action contact.add
+crm audit list --entity ct_01ABC...
+crm audit list --since 2026-09-20T00:00:00Z
+
+# Output
+crm audit list --limit 100 --format json
+```
+
+#### `crm audit verify`
+
+Walks the full chain and reports the first broken row. Exit `0` when
+intact, exit `1` with the tampered `seq` and reason otherwise:
+
+```bash
+$ crm audit verify
+OK: audit chain intact — 42 row(s) verified; genesis seq 1
+
+$ crm audit verify
+Error: audit chain tampered at seq 7: content hash mismatch — this row was altered after being written
+audit chain verification failed
+```
+
+#### `crm audit export`
+
+The full chain (oldest first), for off-machine retention or review:
+
+```bash
+crm audit export                       # table
+crm audit export --format json
+crm audit export --format csv
+```
 
 ---
 

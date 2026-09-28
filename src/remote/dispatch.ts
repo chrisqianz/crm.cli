@@ -11,6 +11,7 @@
  */
 import { loadConfig } from '../config'
 import { openDB } from '../db'
+import { auditMeta, auditSnapshot, osUserName, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import { die, gConfig, gDb, gFmt, gInsecure, gRemote } from '../lib/helpers'
 import { RpcClient, RpcError } from '../lib/rpc'
@@ -118,8 +119,33 @@ export async function dispatch<
   if (!def) {
     die(`Error: unknown method "${method}"`)
   }
+  // P4: local mode writes to the same audit hash chain (source=cli-local,
+  // actor=OS user) with before/after snapshots where the target entity
+  // is known.
+  const before = def.write
+    ? await auditSnapshot(db, config, method, params, null)
+    : null
   try {
-    return (await def.fn(db, config, params)) as T
+    const result = (await def.fn(db, config, params)) as T
+    if (def.write) {
+      const after = await auditSnapshot(db, config, method, params, result)
+      const meta = await auditMeta(db, config, method, params, result)
+      try {
+        await recordAudit(db, {
+          action: method,
+          actor_id: 'local',
+          actor_name: osUserName(),
+          source: 'cli-local',
+          entity_type: meta.entity_type,
+          entity_id: meta.entity_id,
+          before_json: before,
+          after_json: after,
+        })
+      } catch {
+        // an audit failure must not fail the data write
+      }
+    }
+    return result
   } catch (e) {
     if (e instanceof ServiceError) {
       // exit 3 = conflict: recoverable, expected in a shared environment

@@ -5,6 +5,7 @@ import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import type { User } from '../drizzle-schema'
 import * as schema from '../drizzle-schema'
+import { auditMeta, auditSnapshot, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import {
   generatePassword,
@@ -66,31 +67,7 @@ function strParam(params: Record<string, unknown>, name: string): string {
 
 // ── Audit ──
 
-export interface AuditEvent {
-  action: string
-  actor_id: string
-  actor_name: string
-  after_json?: string
-  entity_id?: string
-  entity_type?: string
-  ip?: string
-  source: string
-}
-
-export async function recordAudit(db: DB, e: AuditEvent): Promise<void> {
-  await db.insert(schema.auditLog).values({
-    at: new Date().toISOString(),
-    actor_id: e.actor_id,
-    actor_name: e.actor_name,
-    action: e.action,
-    entity_type: e.entity_type ?? null,
-    entity_id: e.entity_id ?? null,
-    before_json: null,
-    after_json: e.after_json ?? null,
-    source: e.source,
-    ip: e.ip ?? null,
-  })
-}
+// ── Audit: see src/lib/audit.ts (hash chain, shared by local/remote/fuse) ──
 
 // ── Lookups ──
 
@@ -394,17 +371,35 @@ export async function handleCommand(
   }
   // P3 actor threading: the service layer records the acting user on the
   // rows it touches (local mode has no identity, so it records none).
-  const actorParams = { ...params, actor: identity.username }
+  // Only injected for write methods — read-only services may use `actor`
+  // as a user-facing filter (e.g. `audit list --actor`) and must not see
+  // the identity instead of the caller's explicit params.
+  const actorParams = def.write
+    ? { actor: identity.username, ...params }
+    : params
+  const before = def.write
+    ? await auditSnapshot(db, config, method, actorParams, null)
+    : null
   try {
     const result = await def.fn(db, config, actorParams)
     if (def.write) {
-      await recordAudit(db, {
-        action: method,
-        actor_id: identity.id,
-        actor_name: identity.username,
-        source: 'rpc',
-        ip: ctx.ip,
-      })
+      const after = await auditSnapshot(db, config, method, actorParams, result)
+      const meta = await auditMeta(db, config, method, actorParams, result)
+      try {
+        await recordAudit(db, {
+          action: method,
+          actor_id: identity.id,
+          actor_name: identity.username,
+          source: 'rpc',
+          ip: ctx.ip,
+          entity_type: meta.entity_type,
+          entity_id: meta.entity_id,
+          before_json: before,
+          after_json: after,
+        })
+      } catch {
+        // an audit failure must not fail the data write
+      }
     }
     return result
   } catch (e) {

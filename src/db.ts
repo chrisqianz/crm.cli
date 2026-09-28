@@ -86,7 +86,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
 -- Enterprise (spec/enterprise.md P1): identity, tokens, audit.
 -- users is the authority for role and token. password_hash is argon2id.
 -- tokens stores a SHA-256 hash only (raw token is shown exactly once).
--- audit_log is append-only in v1 (hash chain lands in P4).
+-- audit_log is append-only and carries the hash chain (prev_hash/row_hash)
+-- so any tamper is detectable offline (crm audit verify).
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
@@ -124,13 +125,21 @@ CREATE TABLE IF NOT EXISTS audit_log (
   before_json TEXT,
   after_json TEXT,
   source TEXT NOT NULL,
-  ip TEXT
+  ip TEXT,
+  prev_hash TEXT NOT NULL DEFAULT '',
+  row_hash TEXT NOT NULL DEFAULT ''
 );
 `
 
 export async function openDB(dbPath: string): Promise<DB> {
   mkdirSync(dirname(dbPath), { recursive: true })
   const client = createClient({ url: `file:${dbPath}` })
+
+  // Set the busy timeout before the first statement: schema bootstrap DDL
+  // (CREATE TABLE etc.) is itself a write and must not fail with
+  // SQLITE_BUSY when parallel first-time users race on a fresh database.
+  await busyExec(client, 'PRAGMA busy_timeout=30000')
+
   const db = drizzle(client, { schema })
 
   // Initialize schema: execute each statement separately since libSQL
@@ -139,42 +148,104 @@ export async function openDB(dbPath: string): Promise<DB> {
     .map((s) => s.trim())
     .filter((s) => s.length > 0)
   for (const stmt of statements) {
-    await client.execute(stmt)
+    await busyExec(client, stmt)
   }
 
-  await client.execute('PRAGMA journal_mode=WAL')
-  await client.execute('PRAGMA foreign_keys=ON')
-  // P3 write-retry/backoff: SQLite retries internally with backoff up to
-  // this window. 5s was not enough for 40 parallel writers under machine
-  // load (the db-busy-timeout flake); 30s keeps the single-writer
-  // guarantee while letting the queue drain. Normal use never approaches
-  // the cap.
-  await client.execute('PRAGMA busy_timeout=30000')
+  await busyExec(client, 'PRAGMA journal_mode=WAL')
+  await busyExec(client, 'PRAGMA foreign_keys=ON')
 
-  await migrateVersionColumns(client)
+  await migrateSchema(client)
 
   return db
 }
 
 /**
- * P3 migration for databases created before the version/updated_by
- * columns existed. Each ALTER runs at most once; the column check makes
- * the whole pass idempotent and cheap (3 tables × 2 columns).
+ * Execute a statement with manual SQLITE_BUSY retry. The busy_timeout
+ * pragma covers ordinary DML, but bootstrap/migration DDL can hit a
+ * transient exclusive lock held by a parallel process's schema pass;
+ * retrying with backoff keeps the single-writer guarantee without
+ * surfacing a spurious lock error to the user.
  */
-async function migrateVersionColumns(
+async function busyExec(
+  client: ReturnType<typeof createClient>,
+  sql: string,
+  attempts = 20,
+): Promise<void> {
+  for (let i = 0; ; i++) {
+    try {
+      await client.execute(sql)
+      return
+    } catch (err) {
+      const busy =
+        err instanceof Error &&
+        /SQLITE_BUSY|database is locked/i.test(err.message)
+      if (!busy || i >= attempts - 1) {
+        throw err
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(50 * 2 ** i, 2000)),
+      )
+    }
+  }
+}
+
+/**
+ * Migrations for databases created before a column existed. Each ALTER
+ * runs at most once; the column check makes the whole pass idempotent
+ * and cheap.
+ */
+async function migrateSchema(
   client: ReturnType<typeof createClient>,
 ): Promise<void> {
-  const tables = ['contacts', 'companies', 'deals'] as const
-  for (const table of tables) {
-    const cols = await client
-      .execute(`PRAGMA table_info(${table})`)
-      .then((r) => r.rows.map((row) => String(row[1])))
-    for (const [column, definition] of [
-      ['version', 'version INTEGER NOT NULL DEFAULT 1'],
-      ['updated_by', 'updated_by TEXT'],
-    ] as const) {
-      if (!cols.includes(column)) {
-        await client.execute(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
+  // Fast path: no data anywhere → freshly created database (SCHEMA_SQL
+  // above already has every column) → skip the exclusive-lock ALTER pass
+  // so parallel first-writes don't queue behind a checkpoint.
+  let hasData = false
+  for (const table of [
+    'contacts',
+    'companies',
+    'deals',
+    'audit_log',
+    'users',
+  ]) {
+    const r = await client.execute(`SELECT 1 FROM ${table} LIMIT 1`)
+    if (r.rows.length > 0) {
+      hasData = true
+      break
+    }
+  }
+  if (!hasData) {
+    return
+  }
+  const migrations: readonly [string, string, string][] = [
+    // P3: optimistic locking + actor threading
+    ['contacts', 'version', 'version INTEGER NOT NULL DEFAULT 1'],
+    ['contacts', 'updated_by', 'updated_by TEXT'],
+    ['companies', 'version', 'version INTEGER NOT NULL DEFAULT 1'],
+    ['companies', 'updated_by', 'updated_by TEXT'],
+    ['deals', 'version', 'version INTEGER NOT NULL DEFAULT 1'],
+    ['deals', 'updated_by', 'updated_by TEXT'],
+    // P4: audit hash chain
+    ['audit_log', 'prev_hash', "prev_hash TEXT NOT NULL DEFAULT ''"],
+    ['audit_log', 'row_hash', "row_hash TEXT NOT NULL DEFAULT ''"],
+  ]
+  const seen = new Set<string>()
+  for (const [table] of migrations) {
+    if (seen.has(table)) {
+      continue
+    }
+    seen.add(table)
+    for (const [, definition] of migrations.filter(([t]) => t === table)) {
+      try {
+        await busyExec(client, `ALTER TABLE ${table} ADD COLUMN ${definition}`)
+      } catch (err) {
+        // "duplicate column name" = already migrated — expected. Anything
+        // else (including SQLITE_BUSY under contention) must propagate.
+        if (
+          !(err instanceof Error && /duplicate column name/i.test(err.message))
+        ) {
+          throw err
+        }
       }
     }
   }

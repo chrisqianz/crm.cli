@@ -7,6 +7,7 @@ import {
   registerLogCommand,
 } from './commands/activity'
 import { registerAdminCommands } from './commands/admin'
+import { registerAuditCommands } from './commands/audit'
 import { registerCompanyCommands } from './commands/company'
 import { registerContactCommands } from './commands/contact'
 import { registerDealCommands, registerPipelineCommand } from './commands/deal'
@@ -37,6 +38,7 @@ program.name('crm').description('Headless CLI-first CRM').version(version, '-V')
 program.exitOverride()
 
 registerContactCommands(program)
+registerAuditCommands(program)
 registerCompanyCommands(program)
 registerDealCommands(program)
 registerPipelineCommand(program)
