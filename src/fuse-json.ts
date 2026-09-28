@@ -164,6 +164,9 @@ export async function buildContactJSON(
     recent_activity: contactActivities,
     created_at: c.created_at,
     updated_at: c.updated_at,
+    // P3: round-tripped on write so document writes CAS for free
+    version: c.version,
+    updated_by: c.updated_by,
   }
 }
 
@@ -201,6 +204,8 @@ export async function buildCompanyJSON(
     deals: linkedDeals,
     created_at: co.created_at,
     updated_at: co.updated_at,
+    version: co.version,
+    updated_by: co.updated_by,
   }
 }
 
@@ -271,6 +276,8 @@ export async function buildDealJSON(
     stage_history: stageHistory,
     created_at: d.created_at,
     updated_at: d.updated_at,
+    version: d.version,
+    updated_by: d.updated_by,
   }
 }
 

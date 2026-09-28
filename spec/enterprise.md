@@ -373,7 +373,7 @@ drive the CLI client against it.
 | **P0** ✅ (0.5 wk) | Socket perms, hooks marker, dep audit | `bun test` green; new tests prove socket is 0600 and project hooks are inert without marker |
 | **P1** ✅ (2.5–3.5 wk) | `crm serve`: TCP+TLS, **local accounts** (argon2id, lockout, login audit rows), `users`/`tokens` tables, token issuance (hash store), connection limits, `/healthz`, systemd/Docker | `crm admin user create` + `crm login` (username/password on TTY) issues a token; wrong password increments lockout counter + audit row; bad token → `AUTH`; health endpoint answers; server survives restart with existing DB — all covered by `test/enterprise/serve.test.ts` + `auth.test.ts` |
 | **P2** ✅ (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode | All existing commands work identically in local and remote mode (proven by `test/enterprise/remote.test.ts`, which diffs normalized local vs remote output for the full data surface); scenario tests run against both (`remote-scenarios.test.ts`); remote CLI has zero local DB access (proven by test with an isolated `HOME` that gains no `.crm`); RBAC enforced per-method; server-side hooks fire on remote writes |
-| **P3** (3–4 wk) | `version` column + CAS on all data rows, exit code 3 on conflict, actor threading (who-did-what on entity rows), conflict-recovery UX | Two concurrent writers → one wins, other gets exit 3 with current state; `crm contact edit` after a conflict shows the server's current values and retries; RBAC matrix test (4 roles × read/write/admin) codified as a table-driven test |
+| **P3** ✅ (3–4 wk) | `version` column + CAS on all data rows, exit code 3 on conflict, actor threading (who-did-what on entity rows), conflict-recovery UX | Two concurrent writers → one wins, other gets exit 3 with current state; `crm contact edit` after a conflict shows the server's current values and retries; RBAC matrix test (4 roles × read/write/admin) codified as a table-driven test — all proven by `test/cas.test.ts` + `test/enterprise/concurrency.test.ts` + `test/enterprise/rbac.test.ts` |
 | **P4** (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
 | **P6** (6–10 wk) | **LDAP directory integration** (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI), field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
@@ -409,10 +409,37 @@ to the slot right after P3 — it depends only on the P1/P2 users/roles model.
   session, so a service token can do full administration non-interactively.
 
 Known flaky test (pre-existing, verified by A/B on f9bdc95 vs 3100ca6):
-`test/db-busy-timeout.test.ts` (40 parallel writers, 5s busy_timeout) fails
-intermittently under machine load — one writer exceeds the 5s lock wait.
-Its proper fix is the write-retry/backoff semantics that P3 builds along
-with CAS; do not weaken the test in P0.
+`test/db-busy-timeout.test.ts` (40 parallel writers, 5s busy_timeout) failed
+intermittently under machine load — one writer exceeded the 5s lock wait.
+P3 raised `PRAGMA busy_timeout` from 5000 to 30000, which has stabilized it;
+the CAS machinery (below) makes write-conflict retry a first-class flow.
+
+**P3 as-built notes:**
+
+- **CAS is opt-in per write**: `--version <n>` on `contact/company/deal
+  edit` and `deal move` makes the write compare-and-set (`WHERE id = ? AND
+  version = ?`); without it, last write wins. Every write to
+  `contacts`/`companies`/`deals` (CLI, RPC, FUSE document, tag, merge,
+  import-update) bumps `version` — so an unversioned write invalidates a
+  version someone else was holding, exactly like a concurrent reader.
+- **Exit code 3 = any conflict**: stale `--version`, duplicate email/website
+  rejection, or any other write lost to a data change underneath. The error
+  message carries the current version (CAS) so the retry loop is: re-read
+  (`crm contact show`), retry with the new `--version`. Wire code stays
+  `CONFLICT` either way.
+- **`--version` collision**: the program-level version flag is now `-V`
+  only; `--version` belongs to the subcommands (commander would otherwise
+  swallow it).
+- **Actor threading**: RPC writes record `updated_by = <username>` on the
+  rows they touch (add/edit/move/merge/tag/import); local mode records none
+  (single user, no identity). `updated_by` is visible in `show`.
+- **FUSE documents carry `version`**: the daemon accepts it in writes and
+  rejects stale ones with `ECONFLICT` (proven by
+  `test/enterprise/daemon-cas.test.ts` driving the NDJSON socket); the NDJSON
+  response echoes the request `id` when present (FUSE clients send none).
+- **RBAC matrix** is table-driven in `test/enterprise/rbac.test.ts` —
+  owner reuses the bootstrap token (owner cannot be provisioned via
+  `admin.user.create`), the other three roles are provisioned per row.
 
 ## Test additions (spec-first, before each phase's code)
 

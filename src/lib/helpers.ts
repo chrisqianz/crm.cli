@@ -53,9 +53,9 @@ export function makeId(prefix: string) {
 export function now() {
   return new Date().toISOString()
 }
-export function die(msg: string): never {
+export function die(msg: string, code = 1): never {
   console.error(msg)
-  process.exit(1)
+  process.exit(code)
 }
 export function collect(v: string, prev: string[]) {
   prev.push(v)
@@ -342,6 +342,9 @@ export async function contactDetail(
   config: CRMConfig,
 ): Promise<Record<string, unknown>> {
   const row = contactToRow(c)
+  // P3: version/actor so clients can CAS the next write
+  row.version = c.version
+  row.updated_by = c.updated_by
   const phones: string[] = safeJSON(c.phones)
   row._display_phones = phones.map((p) =>
     formatPhone(p, config.phone.display, config.phone.default_country),
@@ -368,6 +371,8 @@ export async function companyDetail(
   config: CRMConfig,
 ): Promise<Record<string, unknown>> {
   const row = companyToRow(co)
+  row.version = co.version
+  row.updated_by = co.updated_by
   const phones: string[] = safeJSON(co.phones)
   row._display_phones = phones.map((p) =>
     formatPhone(p, config.phone.display, config.phone.default_country),
@@ -397,6 +402,8 @@ export async function dealDetail(
   d: Deal,
 ): Promise<Record<string, unknown>> {
   const row = dealToRow(d)
+  row.version = d.version
+  row.updated_by = d.updated_by
   const contactIds: string[] = safeJSON(d.contacts)
   const contactPromises = contactIds.map(async (cid) => {
     const results = await db
@@ -587,4 +594,51 @@ export function diceCoefficient(a: string, b: string): number {
     overlap += Math.min(count, bBi.get(bg) || 0)
   }
   return (2 * overlap) / (a.length - 1 + b.length - 1)
+}
+
+// ── P3: optimistic concurrency (compare-and-set) ──
+
+/**
+ * Parse the optional `--version` CAS parameter. Returns undefined for
+ * last-write-wins (no CAS), throws INVALID for malformed values.
+ */
+export function parseCasVersion(raw: unknown): number | undefined {
+  if (raw === undefined || raw === null || raw === '') {
+    return undefined
+  }
+  const v = Number(raw)
+  if (!Number.isInteger(v) || v < 1) {
+    throw new ServiceError(
+      'INVALID',
+      `Error: invalid --version "${String(raw)}" — positive integer required`,
+    )
+  }
+  return v
+}
+
+/** Rows affected by a drizzle/libsql update result. */
+export function rowsAffected(result: unknown): number {
+  const r = result as { rowsAffected?: number } | null
+  if (r && typeof r.rowsAffected === 'number') {
+    return r.rowsAffected
+  }
+  if (Array.isArray(result)) {
+    return result.length
+  }
+  return 1
+}
+
+/** CONFLICT error for a failed CAS attempt, reporting the current state. */
+export function casConflict(
+  kind: string,
+  expected: number,
+  current: { version: number; updated_at: string; updated_by: string | null },
+): ServiceError {
+  const who = current.updated_by
+    ? `, last modified by ${current.updated_by} at ${current.updated_at}`
+    : ''
+  return new ServiceError(
+    'CONFLICT',
+    `Error: conflict — ${kind} was modified after you read it (current version: ${current.version}${who}; you had ${expected}). Re-read and retry with --version ${current.version}.`,
+  )
 }

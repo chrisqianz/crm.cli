@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS contacts (
   tags TEXT NOT NULL DEFAULT '[]',
   custom_fields TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_by TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_contacts_linkedin ON contacts(linkedin) WHERE linkedin IS NOT NULL;
@@ -44,7 +46,9 @@ CREATE TABLE IF NOT EXISTS companies (
   tags TEXT NOT NULL DEFAULT '[]',
   custom_fields TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS deals (
@@ -59,7 +63,9 @@ CREATE TABLE IF NOT EXISTS deals (
   tags TEXT NOT NULL DEFAULT '[]',
   custom_fields TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS activities (
@@ -138,12 +144,40 @@ export async function openDB(dbPath: string): Promise<DB> {
 
   await client.execute('PRAGMA journal_mode=WAL')
   await client.execute('PRAGMA foreign_keys=ON')
-  // Wait up to 5s for a busy lock instead of erroring immediately. SQLite
-  // is single-writer; without this, concurrent writes (e.g. parallel CLI
-  // invocations or daemon + CLI) hit SQLITE_BUSY and surface to the user.
-  await client.execute('PRAGMA busy_timeout=5000')
+  // P3 write-retry/backoff: SQLite retries internally with backoff up to
+  // this window. 5s was not enough for 40 parallel writers under machine
+  // load (the db-busy-timeout flake); 30s keeps the single-writer
+  // guarantee while letting the queue drain. Normal use never approaches
+  // the cap.
+  await client.execute('PRAGMA busy_timeout=30000')
+
+  await migrateVersionColumns(client)
 
   return db
+}
+
+/**
+ * P3 migration for databases created before the version/updated_by
+ * columns existed. Each ALTER runs at most once; the column check makes
+ * the whole pass idempotent and cheap (3 tables × 2 columns).
+ */
+async function migrateVersionColumns(
+  client: ReturnType<typeof createClient>,
+): Promise<void> {
+  const tables = ['contacts', 'companies', 'deals'] as const
+  for (const table of tables) {
+    const cols = await client
+      .execute(`PRAGMA table_info(${table})`)
+      .then((r) => r.rows.map((row) => String(row[1])))
+    for (const [column, definition] of [
+      ['version', 'version INTEGER NOT NULL DEFAULT 1'],
+      ['updated_by', 'updated_by TEXT'],
+    ] as const) {
+      if (!cols.includes(column)) {
+        await client.execute(`ALTER TABLE ${table} ADD COLUMN ${definition}`)
+      }
+    }
+  }
 }
 
 export async function upsertSearchIndex(

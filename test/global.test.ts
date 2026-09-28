@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import { createTestContext } from './helpers.ts'
 
 describe('global flags', () => {
-  test('--version prints version', () => {
+  test('-V prints version', () => {
     const ctx = createTestContext()
-    const out = ctx.runOK('--version')
+    const out = ctx.runOK('-V')
     expect(out.trim()).not.toBe('')
   })
 

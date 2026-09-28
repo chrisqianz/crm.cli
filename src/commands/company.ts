@@ -60,6 +60,10 @@ export function registerCompanyCommands(program: Command) {
     .option('--rm-tag <t>', '', collect, [])
     .option('--set <kv>', '', collect, [])
     .option('--unset <key>', '', collect, [])
+    .option(
+      '--version <n>',
+      'Optimistic locking: require the company to still be at this version (see `crm company show`); exits 3 on conflict',
+    )
     .action(async (ref, opts) => {
       const { id } = await dispatch<{ id: string }>('company.edit', {
         ref,

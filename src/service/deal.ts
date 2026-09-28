@@ -1,7 +1,7 @@
 /**
  * Deal service — pure business logic shared by local and remote mode.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
@@ -13,13 +13,16 @@ import { runHook } from '../hooks'
 import { ServiceError } from '../lib/errors'
 import {
   buildDealSearch,
+  casConflict,
   confirmOrThrow,
   dealDetail,
   getOrCreateCompanyId,
   getOrCreateContactId,
   makeId,
   now,
+  parseCasVersion,
   parseKV,
+  rowsAffected,
 } from '../lib/helpers'
 import {
   resolveCompany,
@@ -125,6 +128,7 @@ export async function dealAdd(
       'Error: pre-deal-add hook rejected creation',
     )
   }
+  const actor = p.actor as string | undefined
   await db.insert(schema.deals).values({
     id,
     title: opts.title,
@@ -138,6 +142,7 @@ export async function dealAdd(
     custom_fields: JSON.stringify(custom),
     created_at: n,
     updated_at: n,
+    ...(actor ? { updated_by: actor } : {}),
   })
   const results = await db
     .select()
@@ -295,6 +300,8 @@ export async function dealEdit(
   if (!d) {
     throw new ServiceError('NOT_FOUND', `Error: deal not found: ${ref}`)
   }
+  const expectedVersion = parseCasVersion(p.version)
+  const actor = p.actor as string | undefined
   const title = opts.title ?? d.title
   const value = opts.value === undefined ? d.value : Number(opts.value)
   const expectedClose = opts.expectedClose
@@ -348,7 +355,7 @@ export async function dealEdit(
   ) {
     throw new ServiceError('INVALID', 'Error: pre-deal-edit hook rejected edit')
   }
-  await db
+  const res = await db
     .update(schema.deals)
     .set({
       title,
@@ -360,8 +367,27 @@ export async function dealEdit(
       tags: JSON.stringify(tags),
       custom_fields: JSON.stringify(custom),
       updated_at: now(),
+      version: sql`${schema.deals.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
     })
-    .where(eq(schema.deals.id, d.id))
+    .where(
+      expectedVersion
+        ? and(
+            eq(schema.deals.id, d.id),
+            eq(schema.deals.version, expectedVersion),
+          )
+        : eq(schema.deals.id, d.id),
+    )
+  if (expectedVersion !== undefined && rowsAffected(res) === 0) {
+    const cur = await db
+      .select()
+      .from(schema.deals)
+      .where(eq(schema.deals.id, d.id))
+    if (!cur[0]) {
+      throw new ServiceError('NOT_FOUND', `Error: deal not found: ${ref}`)
+    }
+    throw casConflict('deal', expectedVersion, cur[0])
+  }
   const results = await db
     .select()
     .from(schema.deals)
@@ -391,6 +417,8 @@ export async function dealMove(
   if (!d) {
     throw new ServiceError('NOT_FOUND', `Error: deal not found: ${ref}`)
   }
+  const expectedVersion = parseCasVersion(p.version)
+  const actor = p.actor as string | undefined
   if (!config.pipeline.stages.includes(stage)) {
     throw new ServiceError('INVALID', `Error: invalid stage "${stage}"`)
   }
@@ -415,10 +443,32 @@ export async function dealMove(
     )
   }
   const n = now()
-  await db
+  const res = await db
     .update(schema.deals)
-    .set({ stage, updated_at: n })
-    .where(eq(schema.deals.id, d.id))
+    .set({
+      stage,
+      updated_at: n,
+      version: sql`${schema.deals.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
+    })
+    .where(
+      expectedVersion
+        ? and(
+            eq(schema.deals.id, d.id),
+            eq(schema.deals.version, expectedVersion),
+          )
+        : eq(schema.deals.id, d.id),
+    )
+  if (expectedVersion !== undefined && rowsAffected(res) === 0) {
+    const cur = await db
+      .select()
+      .from(schema.deals)
+      .where(eq(schema.deals.id, d.id))
+    if (!cur[0]) {
+      throw new ServiceError('NOT_FOUND', `Error: deal not found: ${ref}`)
+    }
+    throw casConflict('deal', expectedVersion, cur[0])
+  }
   let body = `from ${oldStage} to ${stage}`
   if (note) {
     body += ` | ${note}`

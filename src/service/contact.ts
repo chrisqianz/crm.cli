@@ -6,7 +6,7 @@
  * ServiceError on failure. No console output, no process.exit — rendering
  * and transport concerns live in the CLI command layer.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
@@ -18,6 +18,7 @@ import { runHook } from '../hooks'
 import { ServiceError } from '../lib/errors'
 import {
   buildContactSearch,
+  casConflict,
   checkDupeEmail,
   checkDupePhone,
   checkDupeSocial,
@@ -26,7 +27,9 @@ import {
   getOrCreateCompanyId,
   makeId,
   now,
+  parseCasVersion,
   parseKV,
+  rowsAffected,
   validateEmail,
 } from '../lib/helpers'
 import {
@@ -126,6 +129,7 @@ export async function contactAdd(
       'Error: pre-contact-add hook rejected creation',
     )
   }
+  const actor = p.actor as string | undefined
   await db.insert(schema.contacts).values({
     id: cid,
     name: opts.name,
@@ -140,6 +144,7 @@ export async function contactAdd(
     custom_fields: JSON.stringify(custom),
     created_at: n,
     updated_at: n,
+    ...(actor ? { updated_by: actor } : {}),
   })
   const results = await db
     .select()
@@ -275,6 +280,8 @@ export async function contactEdit(
   if (!c) {
     throw new ServiceError('NOT_FOUND', `Error: contact not found: ${ref}`)
   }
+  const expectedVersion = parseCasVersion(p.version)
+  const actor = p.actor as string | undefined
   let emails: string[] = safeJSON(c.emails)
   let phones: string[] = safeJSON(c.phones)
   let companies: string[] = safeJSON(c.companies)
@@ -394,7 +401,7 @@ export async function contactEdit(
       'Error: pre-contact-edit hook rejected edit',
     )
   }
-  await db
+  const res = await db
     .update(schema.contacts)
     .set({
       name,
@@ -408,8 +415,27 @@ export async function contactEdit(
       tags: JSON.stringify(tags),
       custom_fields: JSON.stringify(custom),
       updated_at: now(),
+      version: sql`${schema.contacts.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
     })
-    .where(eq(schema.contacts.id, c.id))
+    .where(
+      expectedVersion
+        ? and(
+            eq(schema.contacts.id, c.id),
+            eq(schema.contacts.version, expectedVersion),
+          )
+        : eq(schema.contacts.id, c.id),
+    )
+  if (expectedVersion !== undefined && rowsAffected(res) === 0) {
+    const cur = await db
+      .select()
+      .from(schema.contacts)
+      .where(eq(schema.contacts.id, c.id))
+    if (!cur[0]) {
+      throw new ServiceError('NOT_FOUND', `Error: contact not found: ${ref}`)
+    }
+    throw casConflict('contact', expectedVersion, cur[0])
+  }
   const results = await db
     .select()
     .from(schema.contacts)
@@ -455,6 +481,7 @@ export async function contactRm(
       'Error: pre-contact-rm hook rejected deletion',
     )
   }
+  const actor = p.actor as string | undefined
   const allDeals = await db.select().from(schema.deals)
   for (const d of allDeals) {
     const contacts: string[] = safeJSON(d.contacts)
@@ -463,6 +490,8 @@ export async function contactRm(
         .update(schema.deals)
         .set({
           contacts: JSON.stringify(contacts.filter((id) => id !== c.id)),
+          version: sql`${schema.deals.version} + 1`,
+          ...(actor ? { updated_by: actor } : {}),
         })
         .where(eq(schema.deals.id, d.id))
     }
@@ -504,9 +533,17 @@ export async function contactMerge(
   const bluesky = c1.bluesky || c2.bluesky
   const telegram = c1.telegram || c2.telegram
   // Clear loser's social handles to avoid UNIQUE constraint conflicts, then delete loser first
+  const actor = p.actor as string | undefined
   await db
     .update(schema.contacts)
-    .set({ linkedin: null, x: null, bluesky: null, telegram: null })
+    .set({
+      linkedin: null,
+      x: null,
+      bluesky: null,
+      telegram: null,
+      version: sql`${schema.contacts.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
+    })
     .where(eq(schema.contacts.id, c2.id))
   await db
     .update(schema.contacts)
@@ -521,6 +558,8 @@ export async function contactMerge(
       bluesky,
       telegram,
       updated_at: now(),
+      version: sql`${schema.contacts.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
     })
     .where(eq(schema.contacts.id, c1.id))
   const allDeals = await db.select().from(schema.deals)
@@ -532,7 +571,11 @@ export async function contactMerge(
       ]
       await db
         .update(schema.deals)
-        .set({ contacts: JSON.stringify(updated) })
+        .set({
+          contacts: JSON.stringify(updated),
+          version: sql`${schema.deals.version} + 1`,
+          ...(actor ? { updated_by: actor } : {}),
+        })
         .where(eq(schema.deals.id, d.id))
     }
   }

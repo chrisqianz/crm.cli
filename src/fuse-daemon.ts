@@ -22,7 +22,7 @@
 import { chmodSync, existsSync, unlinkSync } from 'node:fs'
 import { createServer, type Socket } from 'node:net'
 
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 import { type CRMConfig, loadConfig } from './config'
@@ -37,7 +37,11 @@ import {
   LLM_TXT,
   slugify,
 } from './fuse-json'
-import { getOrCreateCompanyId } from './lib/helpers'
+import {
+  getOrCreateCompanyId,
+  parseCasVersion,
+  rowsAffected,
+} from './lib/helpers'
 import { normalizePhone } from './normalize'
 import {
   computeConversion,
@@ -91,6 +95,8 @@ const CONTACT_WRITE_FIELDS = new Set([
   'company',
   'tags',
   'custom_fields',
+  'version',
+  'updated_by',
   'created_at',
   'updated_at',
   'title',
@@ -117,6 +123,8 @@ const COMPANY_WRITE_FIELDS = new Set([
   'phone',
   'tags',
   'custom_fields',
+  'version',
+  'updated_by',
   'created_at',
   'updated_at',
   'industry',
@@ -141,6 +149,8 @@ const DEAL_WRITE_FIELDS = new Set([
   'probability',
   'tags',
   'custom_fields',
+  'version',
+  'updated_by',
   'created_at',
   'updated_at',
   // Read-only enriched fields (ignored on write)
@@ -1181,7 +1191,8 @@ async function writeContact(
       return { error: 'ENOENT' }
     }
 
-    await db
+    const casVersion = parseCasVersion(data.version)
+    const res = await db
       .update(schema.contacts)
       .set({
         name: (data.name as string) || existing[0].name,
@@ -1207,8 +1218,22 @@ async function writeContact(
             : JSON.stringify(data.tags),
         custom_fields: cfStr,
         updated_at: now,
+        version: sql`${schema.contacts.version} + 1`,
       })
-      .where(eq(schema.contacts.id, id))
+      .where(
+        casVersion
+          ? and(
+              eq(schema.contacts.id, id),
+              eq(schema.contacts.version, casVersion),
+            )
+          : eq(schema.contacts.id, id),
+      )
+    if (casVersion !== undefined && rowsAffected(res) === 0) {
+      return {
+        error: 'ECONFLICT',
+        msg: 'stale version — re-read the document and retry',
+      }
+    }
 
     return { ok: true }
   }
@@ -1305,7 +1330,8 @@ async function writeCompany(
     if (!existing[0]) {
       return { error: 'ENOENT' }
     }
-    await db
+    const casVersion = parseCasVersion(data.version)
+    const res = await db
       .update(schema.companies)
       .set({
         name: (data.name as string) || existing[0].name,
@@ -1317,8 +1343,22 @@ async function writeCompany(
             : JSON.stringify(data.tags),
         custom_fields: cfStr,
         updated_at: now,
+        version: sql`${schema.companies.version} + 1`,
       })
-      .where(eq(schema.companies.id, id))
+      .where(
+        casVersion
+          ? and(
+              eq(schema.companies.id, id),
+              eq(schema.companies.version, casVersion),
+            )
+          : eq(schema.companies.id, id),
+      )
+    if (casVersion !== undefined && rowsAffected(res) === 0) {
+      return {
+        error: 'ECONFLICT',
+        msg: 'stale version — re-read the document and retry',
+      }
+    }
     return { ok: true }
   }
 
@@ -1380,7 +1420,8 @@ async function writeDeal(
       })
     }
 
-    await db
+    const casVersion = parseCasVersion(data.version)
+    const res = await db
       .update(schema.deals)
       .set({
         title: (data.title as string) || existing[0].title,
@@ -1420,8 +1461,19 @@ async function writeDeal(
             ? existing[0].custom_fields
             : JSON.stringify(data.custom_fields),
         updated_at: now,
+        version: sql`${schema.deals.version} + 1`,
       })
-      .where(eq(schema.deals.id, id))
+      .where(
+        casVersion
+          ? and(eq(schema.deals.id, id), eq(schema.deals.version, casVersion))
+          : eq(schema.deals.id, id),
+      )
+    if (casVersion !== undefined && rowsAffected(res) === 0) {
+      return {
+        error: 'ECONFLICT',
+        msg: 'stale version — re-read the document and retry',
+      }
+    }
 
     return { ok: true }
   }
@@ -1654,9 +1706,28 @@ async function processLine(
   line: string,
 ) {
   try {
-    const req = JSON.parse(line)
-    const resp = await handleRequest(db, config, stages, req)
-    conn.write(`${JSON.stringify(resp)}\n`)
+    const raw = JSON.parse(line) as {
+      op?: unknown
+      path?: unknown
+      data?: unknown
+      id?: unknown
+    }
+    if (typeof raw.op !== 'string' || typeof raw.path !== 'string') {
+      conn.write(
+        `${JSON.stringify({ error: 'EINVAL', msg: 'missing op/path' })}\n`,
+      )
+      return
+    }
+    const resp = await handleRequest(db, config, stages, {
+      op: raw.op,
+      path: raw.path,
+      data: typeof raw.data === 'string' ? raw.data : undefined,
+    })
+    // Echo the request's `id` (when present) so NDJSON clients can match
+    // responses to requests out of order. FUSE clients send no id and are
+    // unaffected by the extra field.
+    const out = typeof raw.id === 'number' ? { id: raw.id, ...resp } : resp
+    conn.write(`${JSON.stringify(out)}\n`)
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err)
     conn.write(`${JSON.stringify({ error: 'EIO', msg })}\n`)

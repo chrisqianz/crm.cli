@@ -25,7 +25,7 @@ export PATH="$HOME/.local/bin:$PATH"
 Verify:
 
 ```bash
-crm --version
+crm -V
 ```
 
 ## Configuration

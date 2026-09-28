@@ -101,7 +101,8 @@ export async function dispatch<
       return await c.call<T>(method, params)
     } catch (e) {
       if (e instanceof RpcError) {
-        die(e.message)
+        // exit 3 = conflict: recoverable, expected in a shared environment
+        die(e.message, e.code === 'CONFLICT' ? 3 : 1)
       }
       throw e
     } finally {
@@ -121,7 +122,8 @@ export async function dispatch<
     return (await def.fn(db, config, params)) as T
   } catch (e) {
     if (e instanceof ServiceError) {
-      die(e.message)
+      // exit 3 = conflict: recoverable, expected in a shared environment
+      die(e.message, e.code === 'CONFLICT' ? 3 : 1)
     }
     throw e
   }

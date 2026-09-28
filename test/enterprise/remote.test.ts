@@ -84,9 +84,18 @@ function localRun(dbPath: string, args: string[]): RunResult {
  * same logical dataset compares equal.
  */
 function normalize(s: string): string {
-  return s
-    .replace(/\b[a-z]{2}_[A-Za-z0-9]{26}\b/g, 'ID')
-    .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, 'TS')
+  return (
+    s
+      .replace(/\b[a-z]{2}_[A-Za-z0-9]{26}\b/g, 'ID')
+      .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, 'TS')
+      // P3: version numbers advance identically on both legs; updated_by is
+      // only populated remotely (local mode has no identity) — both are
+      // environment-specific, like the normalized IDs/timestamps above.
+      .replace(/^version: \d+$/gm, 'version: V')
+      .replace(/^updated_by: \S+$/gm, 'updated_by: U')
+      // JSON form of the same fields (show --format json)
+      .replace(/"updated_by": (null|"[^"]*")/g, '"updated_by": "U"')
+  )
 }
 
 /** Read a column of a table straight from the server's db file. */
@@ -385,7 +394,9 @@ describe('P2 remote: CRUD parity', () => {
         '--email',
         'a@x.com',
       ])
-      expect(dupRemote.exitCode).toBe(1)
+      // duplicate email is a CONFLICT → exit 3 on both sides (P3 exit-code
+      // model: 0 ok, 1 error, 3 conflict)
+      expect(dupRemote.exitCode).toBe(3)
       expect(dupRemote.stderr).toContain('duplicate email "a@x.com"')
 
       const { dbPath } = freshDb()
@@ -398,7 +409,7 @@ describe('P2 remote: CRUD parity', () => {
         '--email',
         'a@x.com',
       ])
-      expect(dupLocal.exitCode).toBe(1)
+      expect(dupLocal.exitCode).toBe(3)
       expect(dupLocal.stderr).toContain('duplicate email "a@x.com"')
     })
   })

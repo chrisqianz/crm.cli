@@ -72,6 +72,10 @@ export function registerContactCommands(program: Command) {
     .option('--telegram <h>', 'Telegram')
     .option('--set <kv>', '', collect, [])
     .option('--unset <key>', '', collect, [])
+    .option(
+      '--version <n>',
+      'Optimistic locking: require the contact to still be at this version (see `crm contact show`); exits 3 on conflict',
+    )
     .action(async (ref, opts) => {
       const { id } = await dispatch<{ id: string }>('contact.edit', {
         ref,

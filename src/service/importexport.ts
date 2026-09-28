@@ -3,7 +3,7 @@
  * mode. Import records are parsed client-side (csv/json/stdin) and sent as
  * plain rows; the server performs all validation and writes.
  */
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
@@ -127,12 +127,15 @@ export async function importContacts(
             custom[k] = v
           }
         }
+        const actor = p.actor as string | undefined
         await db
           .update(schema.contacts)
           .set({
             name: name || existing.name,
             custom_fields: JSON.stringify(custom),
             updated_at: now(),
+            version: sql`${schema.contacts.version} + 1`,
+            ...(actor ? { updated_by: actor } : {}),
           })
           .where(eq(schema.contacts.id, existing.id))
         const results = await db

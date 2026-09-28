@@ -15,6 +15,11 @@ export const contacts = sqliteTable('contacts', {
   custom_fields: text('custom_fields').notNull().default('{}'),
   created_at: text('created_at').notNull(),
   updated_at: text('updated_at').notNull(),
+  // P3: optimistic concurrency — bump on every write; CAS compares it.
+  version: integer('version').notNull().default(1),
+  // P3: actor threading — which server user last touched this row (null
+  // in local single-user mode).
+  updated_by: text('updated_by'),
 })
 
 export const companies = sqliteTable('companies', {
@@ -26,6 +31,8 @@ export const companies = sqliteTable('companies', {
   custom_fields: text('custom_fields').notNull().default('{}'),
   created_at: text('created_at').notNull(),
   updated_at: text('updated_at').notNull(),
+  version: integer('version').notNull().default(1),
+  updated_by: text('updated_by'),
 })
 
 export const deals = sqliteTable('deals', {
@@ -41,6 +48,8 @@ export const deals = sqliteTable('deals', {
   custom_fields: text('custom_fields').notNull().default('{}'),
   created_at: text('created_at').notNull(),
   updated_at: text('updated_at').notNull(),
+  version: integer('version').notNull().default(1),
+  updated_by: text('updated_by'),
 })
 
 export const activities = sqliteTable('activities', {

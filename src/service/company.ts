@@ -1,7 +1,7 @@
 /**
  * Company service — pure business logic shared by local and remote mode.
  */
-import { eq } from 'drizzle-orm'
+import { and, eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
@@ -13,13 +13,16 @@ import { runHook } from '../hooks'
 import { ServiceError } from '../lib/errors'
 import {
   buildCompanySearch,
+  casConflict,
   checkDupePhone,
   checkDupeWebsite,
   companyDetail,
   confirmOrThrow,
   makeId,
   now,
+  parseCasVersion,
   parseKV,
+  rowsAffected,
 } from '../lib/helpers'
 import {
   normalizePhone,
@@ -83,6 +86,7 @@ export async function companyAdd(
       'Error: pre-company-add hook rejected creation',
     )
   }
+  const actor = p.actor as string | undefined
   await db.insert(schema.companies).values({
     id: cid,
     name: opts.name,
@@ -92,6 +96,7 @@ export async function companyAdd(
     custom_fields: JSON.stringify(custom),
     created_at: n,
     updated_at: n,
+    ...(actor ? { updated_by: actor } : {}),
   })
   const results = await db
     .select()
@@ -202,6 +207,8 @@ export async function companyEdit(
   if (!co) {
     throw new ServiceError('NOT_FOUND', `Error: company not found: ${ref}`)
   }
+  const expectedVersion = parseCasVersion(p.version)
+  const actor = p.actor as string | undefined
   let websites: string[] = safeJSON(co.websites)
   let phones: string[] = safeJSON(co.phones)
   let tags: string[] = safeJSON(co.tags)
@@ -272,7 +279,7 @@ export async function companyEdit(
       'Error: pre-company-edit hook rejected edit',
     )
   }
-  await db
+  const res = await db
     .update(schema.companies)
     .set({
       name,
@@ -281,8 +288,27 @@ export async function companyEdit(
       tags: JSON.stringify(tags),
       custom_fields: JSON.stringify(custom),
       updated_at: now(),
+      version: sql`${schema.companies.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
     })
-    .where(eq(schema.companies.id, co.id))
+    .where(
+      expectedVersion
+        ? and(
+            eq(schema.companies.id, co.id),
+            eq(schema.companies.version, expectedVersion),
+          )
+        : eq(schema.companies.id, co.id),
+    )
+  if (expectedVersion !== undefined && rowsAffected(res) === 0) {
+    const cur = await db
+      .select()
+      .from(schema.companies)
+      .where(eq(schema.companies.id, co.id))
+    if (!cur[0]) {
+      throw new ServiceError('NOT_FOUND', `Error: company not found: ${ref}`)
+    }
+    throw casConflict('company', expectedVersion, cur[0])
+  }
   const results = await db
     .select()
     .from(schema.companies)
@@ -318,6 +344,7 @@ export async function companyRm(
       'Error: pre-company-rm hook rejected deletion',
     )
   }
+  const actor = p.actor as string | undefined
   // Unlink from contacts
   const allContacts = await db.select().from(schema.contacts)
   for (const ct of allContacts) {
@@ -327,6 +354,8 @@ export async function companyRm(
         .update(schema.contacts)
         .set({
           companies: JSON.stringify(companies.filter((n) => n !== co.id)),
+          version: sql`${schema.contacts.version} + 1`,
+          ...(actor ? { updated_by: actor } : {}),
         })
         .where(eq(schema.contacts.id, ct.id))
     }
@@ -334,7 +363,11 @@ export async function companyRm(
   // Set deals company to null
   await db
     .update(schema.deals)
-    .set({ company: null })
+    .set({
+      company: null,
+      version: sql`${schema.deals.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
+    })
     .where(eq(schema.deals.company, co.id))
   await db.delete(schema.companies).where(eq(schema.companies.id, co.id))
   await removeSearchIndex(db, co.id)
@@ -368,6 +401,7 @@ export async function companyMerge(
     ...safeJSON(c2.custom_fields),
     ...safeJSON(c1.custom_fields),
   }
+  const actor = p.actor as string | undefined
   await db
     .update(schema.companies)
     .set({
@@ -376,6 +410,8 @@ export async function companyMerge(
       tags: JSON.stringify(mergedTags),
       custom_fields: JSON.stringify(mergedCustom),
       updated_at: now(),
+      version: sql`${schema.companies.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
     })
     .where(eq(schema.companies.id, c1.id))
   // Relink contacts
@@ -388,14 +424,22 @@ export async function companyMerge(
       ]
       await db
         .update(schema.contacts)
-        .set({ companies: JSON.stringify(updated) })
+        .set({
+          companies: JSON.stringify(updated),
+          version: sql`${schema.contacts.version} + 1`,
+          ...(actor ? { updated_by: actor } : {}),
+        })
         .where(eq(schema.contacts.id, ct.id))
     }
   }
   // Relink deals
   await db
     .update(schema.deals)
-    .set({ company: c1.id })
+    .set({
+      company: c1.id,
+      version: sql`${schema.deals.version} + 1`,
+      ...(actor ? { updated_by: actor } : {}),
+    })
     .where(eq(schema.deals.company, c2.id))
   // Transfer activities
   await db

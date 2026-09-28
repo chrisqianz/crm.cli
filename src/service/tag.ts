@@ -1,7 +1,7 @@
 /**
  * Tag service — pure business logic shared by local and remote mode.
  */
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
@@ -20,17 +20,29 @@ async function setTags(
   if (entityType === 'contact') {
     await db
       .update(schema.contacts)
-      .set({ tags: JSON.stringify(tags), updated_at: now() })
+      .set({
+        tags: JSON.stringify(tags),
+        updated_at: now(),
+        version: sql`${schema.contacts.version} + 1`,
+      })
       .where(eq(schema.contacts.id, entityId))
   } else if (entityType === 'company') {
     await db
       .update(schema.companies)
-      .set({ tags: JSON.stringify(tags), updated_at: now() })
+      .set({
+        tags: JSON.stringify(tags),
+        updated_at: now(),
+        version: sql`${schema.companies.version} + 1`,
+      })
       .where(eq(schema.companies.id, entityId))
   } else {
     await db
       .update(schema.deals)
-      .set({ tags: JSON.stringify(tags), updated_at: now() })
+      .set({
+        tags: JSON.stringify(tags),
+        updated_at: now(),
+        version: sql`${schema.deals.version} + 1`,
+      })
       .where(eq(schema.deals.id, entityId))
   }
 }

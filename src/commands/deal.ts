@@ -71,6 +71,10 @@ export function registerDealCommands(program: Command) {
     .option('--rm-tag <t>', '', collect, [])
     .option('--set <kv>', '', collect, [])
     .option('--unset <key>', '', collect, [])
+    .option(
+      '--version <n>',
+      'Optimistic locking: require the deal to still be at this version (see `crm deal show`); exits 3 on conflict',
+    )
     .action(async (ref, opts) => {
       const { id } = await dispatch<{ id: string }>('deal.edit', {
         ref,
@@ -84,11 +88,16 @@ export function registerDealCommands(program: Command) {
     .argument('<ref>')
     .requiredOption('--stage <stage>', 'Target stage')
     .option('--note <text>', 'Note')
+    .option(
+      '--version <n>',
+      'Optimistic locking: require the deal to still be at this version (see `crm deal show`); exits 3 on conflict',
+    )
     .action(async (ref, opts) => {
       const { id } = await dispatch<{ id: string }>('deal.move', {
         ref,
         stage: opts.stage,
         note: opts.note,
+        version: opts.version,
       })
       console.log(id)
     })

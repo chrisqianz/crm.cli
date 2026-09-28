@@ -30,7 +30,10 @@ const version =
     : __PKG_VERSION__
 
 const program = new Command()
-program.name('crm').description('Headless CLI-first CRM').version(version)
+// -V prints the CLI version. `--version` is intentionally NOT a program-level
+// flag: it is the optimistic-locking argument of `contact/company/deal edit`
+// and `deal move` (a top-level --version would swallow the subcommand flag).
+program.name('crm').description('Headless CLI-first CRM').version(version, '-V')
 program.exitOverride()
 
 registerContactCommands(program)

@@ -392,8 +392,11 @@ export async function handleCommand(
       `role "${identity.role}" cannot call ${method}`,
     )
   }
+  // P3 actor threading: the service layer records the acting user on the
+  // rows it touches (local mode has no identity, so it records none).
+  const actorParams = { ...params, actor: identity.username }
   try {
-    const result = await def.fn(db, config, params)
+    const result = await def.fn(db, config, actorParams)
     if (def.write) {
       await recordAudit(db, {
         action: method,

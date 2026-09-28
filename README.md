@@ -219,6 +219,14 @@ Notes:
 to confirm. Local interactive mode still prompts.
 - `crm import …` reads the CSV/JSON on the client and sends the parsed
 records over the wire; validation and writes happen server-side.
+- **Concurrency**: `contacts`, `companies`, and `deals` carry a
+  `version` (visible in `show`). `crm contact/company/deal edit` and
+  `crm deal move` accept `--version <n>` for compare-and-set: if the
+  entity changed since you read it, the write is rejected with exit code
+  `3` and the current version in the error — re-read, retry. Without
+  `--version`, last write wins. Every write (CLI, RPC, or FUSE document)
+  bumps `version` and records `updated_by` (the acting user; null in
+  local single-user mode). See [Exit Codes](#exit-codes).
 - FUSE mounts and NFS export stay local-only (the server exposes RPC,
 not filesystems).
 - `crm admin token create` is how you issue an agent's service token;
@@ -267,7 +275,17 @@ password_min_length = 12
 | `--config <path>` | `CRM_CONFIG` | Path to config file                                 |
 | `--remote [addr]` | `CRM_SERVER` | Run data commands against a server (see [Remote client mode](#remote-client-mode)) |
 | `--insecure`      | `CRM_INSECURE` | Skip TLS certificate verification (self-signed)     |
-| `--version`       | —            | Print version                                       |
+| `-V`              | —            | Print version (`--version` is reserved for optimistic-locking on edit commands) |
+
+### Exit Codes
+
+| Code | Meaning    | Example                                                        |
+| ---- | ---------- | -------------------------------------------------------------- |
+| `0`  | Success    | Command completed                                              |
+| `1`  | Error      | Bad input, not found, hook rejection, auth failure             |
+| `3`  | Conflict   | Stale optimistic-locking `--version`, duplicate email/website, or any other write rejected because the data changed underneath you |
+
+Conflict errors are **recoverable**: the message tells you the current version, re-read the entity (`crm contact show <id>`) and retry with the new `--version`.
 
 ---
 
@@ -373,6 +391,7 @@ crm contact edit ct_01J8Z... --add-company "Acme Ventures" --rm-company "Old Cor
 | `--telegram`    | Set Telegram handle (accepts URL — extracts handle)    |
 | `--set`         | Set custom field `key=value`                           |
 | `--unset`       | Remove custom field                                    |
+| `--version <n>` | Optimistic locking: require the contact to still be at version `n` (from `crm contact show`). A stale version exits `3` with the current version in the error — re-read and retry.  |
 | `--add-tag`     | Add tag                                                |
 | `--rm-tag`      | Remove tag                                             |
 
@@ -465,6 +484,7 @@ crm company edit acme.com --rm-website old-acme.com --rm-phone "+1-415-555-0000"
 | `--unset`       | Remove custom field          |
 | `--add-tag`     | Add tag                      |
 | `--rm-tag`      | Remove tag                   |
+| `--version <n>` | Optimistic locking: require the company to still be at version `n`. A stale version exits `3`. |
 
 #### `crm company rm <id-or-website-or-phone>`
 
@@ -557,6 +577,7 @@ Same pattern as other entities. `--stage` is NOT used here — use `crm deal mov
 | `--unset`          | Remove custom field                                    |
 | `--add-tag`        | Add tag                                                |
 | `--rm-tag`         | Remove tag                                             |
+| `--version <n>`    | Optimistic locking: require the deal to still be at version `n`. A stale version exits `3`. |
 
 #### `crm deal move <id> --stage <stage>`
 
@@ -569,6 +590,8 @@ crm deal move dl_01J8Z... --stage closed-lost --note "Budget cut"
 Records the stage transition with a timestamp by creating a `stage-change` activity entry. This activity includes the old stage, new stage, and timestamp. Stage history is reconstructed from these activity entries — `crm deal show` includes a `stage_history` array with `{stage, at}` pairs. `--note` attaches a note to the transition (shown in `crm report won` and `crm report lost`).
 
 Moving a deal to its current stage is rejected with an error.
+
+`--version <n>` enables optimistic locking: the move is only applied if the deal is still at version `n`. A stale version exits `3` (see [Exit Codes](#exit-codes)).
 
 #### `crm deal rm <id>`
 
