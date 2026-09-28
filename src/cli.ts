@@ -8,6 +8,7 @@ import {
 } from './commands/activity'
 import { registerAdminCommands } from './commands/admin'
 import { registerAuditCommands } from './commands/audit'
+import { registerBackupCommands } from './commands/backup'
 import { registerCompanyCommands } from './commands/company'
 import { registerContactCommands } from './commands/contact'
 import { registerDealCommands, registerPipelineCommand } from './commands/deal'
@@ -53,6 +54,7 @@ registerFuseCommands(program)
 registerServeCommand(program)
 registerLoginCommands(program)
 registerAdminCommands(program)
+registerBackupCommands(program)
 
 // Hidden subcommand: runs the FUSE daemon in-process (used by `crm mount`)
 if (cleanArgv[0] === '__daemon') {

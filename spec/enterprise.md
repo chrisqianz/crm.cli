@@ -391,7 +391,7 @@ drive the CLI client against it.
 | **P2** ✅ (2–3 wk) | Service-layer refactor (commands → pure modules), RPC surface, `--remote`/`CRM_SERVER` client mode | All existing commands work identically in local and remote mode (proven by `test/enterprise/remote.test.ts`, which diffs normalized local vs remote output for the full data surface); scenario tests run against both (`remote-scenarios.test.ts`); remote CLI has zero local DB access (proven by test with an isolated `HOME` that gains no `.crm`); RBAC enforced per-method; server-side hooks fire on remote writes |
 | **P3** ✅ (3–4 wk) | `version` column + CAS on all data rows, exit code 3 on conflict, actor threading (who-did-what on entity rows), conflict-recovery UX | Two concurrent writers → one wins, other gets exit 3 with current state; `crm contact edit` after a conflict shows the server's current values and retries; RBAC matrix test (4 roles × read/write/admin) codified as a table-driven test — all proven by `test/cas.test.ts` + `test/enterprise/concurrency.test.ts` + `test/enterprise/rbac.test.ts` |
 | **P4** ✅ (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
-| **P5** (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
+| **P5** ✅ (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
 | **P6** (6–10 wk) | **LDAP directory integration** (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI), field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 
 Sequencing note: P1 introduced `users`/`tokens` + local password login; P2 already
@@ -401,6 +401,48 @@ the ~20 write sites; P4 extends audit to a hash chain. P3 and P4 share the
 write-site touch points — plan them as one pass over the same ~20 locations. If
 the target customer requires directory login at go-live, promote LDAP from P6
 to the slot right after P3 — it depends only on the P1/P2 users/roles model.
+
+## Backups (P5)
+
+Continuous WAL replication to a replica destination via **litestream**
+(v0.5.x, pinned): local directory (NAS/share) or S3. The replica is a
+chain of LTX files; `restore` rebuilds a full SQLite file from it.
+
+- **Binary**: resolved as `LITESTREAM_BIN` env → `litestream` on PATH →
+  `~/.crm/bin/litestream` → optional auto-download from the GitHub release
+  (pinned version + SHA-256 verified against the official checksums).
+- **Config** is written next to the DB (`<dbdir>/.litestream.yml`):
+
+  ```yaml
+  dbs:
+    - path: /data/crm.db
+      replica:
+        type: file          # or s3 (bucket/prefix/region)
+        path: /backups/crm
+  ```
+
+- **Commands** (server-host operations, local only — a remote client gets a
+  clear "run on the server host" error):
+  - `crm backup init --destination <path|s3://bucket/prefix>` — write the
+    config, register the DB, take the first snapshot (add `--download` to
+    fetch the binary when none is installed).
+  - `crm backup sync` — one-shot replication pass (`replicate -once`).
+  - `crm backup status` — per-DB replication status (local txid, WAL size).
+  - `crm backup restore --to <path>` — rebuild a fresh DB file from the
+    replica (`restore -o`); refuses to overwrite an existing file.
+  - `crm backup check` — restore to a temp file, run `audit verify` +
+    row-count comparison against the live DB, report.
+- **Server**: `[backup] destination = "..."` in the server config makes
+  `crm serve` spawn `litestream replicate` as a child process at startup
+  (continuous WAL sync, its own sync-interval) and stop it on shutdown.
+- **RPC**: `backup.status` and `backup.sync` are admin methods (an operator
+  or agent can force a sync remotely); `restore` is deliberately local-only.
+- Backup operations write `audit_log` rows (`backup.init` / `backup.sync` /
+  `backup.restore`) like any other mutation.
+- **Deferred to release engineering** (needs CI): prebuilt FUSE/NFS bridge
+  binaries, Windows client build, internal-mirror install doc. The backup/
+  restore surface above is the testable DR story: kill the server, restore
+  from the replica, `audit verify` passes on the restored file.
 
 **P2 as-built notes:**
 
@@ -493,6 +535,41 @@ the CAS machinery (below) makes write-conflict retry a first-class flow.
   table/json/csv/tsv) are all `reader`+ methods; a remote client renders
   them locally (same as every other command).
 
+**P5 as-built notes:**
+
+- **litestream pin**: v0.5.17 (last release in the 0.5 line). Config is
+  the v0.5 shape — top-level `dbs:` list with `- path:` / `replica:` (the
+  older map-style `dbs: { path: ... }` is rejected by the binary); the
+  config file is generated, never parsed by hand — `restore`/`check`
+  read the destination back out of our own generated
+  `<dbdir>/.litestream.yml`.
+- **Binary**: resolved as `LITESTREAM_BIN` → PATH → `~/.crm/bin/litestream`
+  (0700 dir, 0755 binary). `crm backup init --download` fetches the
+  pinned release tarball and verifies SHA-256 against the official
+  `checksums.txt` when a local pinned checksum is not yet recorded.
+- **Remote surface**: `backup.status` (admin, read) and `backup.sync`
+  (admin, write — audited as `backup.sync`) are registry methods, so a
+  remote admin can inspect/force replication; `init`/`restore`/`check`
+  have **no** RPC surface (`localOnly` in `src/remote/dispatch.ts`) — a
+  remote client gets "runs on the server host".
+- **Audit rows**: `backup.init` / `backup.sync` / `backup.restore` write
+  audit rows (source `cli-local`, actor `backup`) with the destination/
+  config in `after_json`; a failed audit never fails the operation.
+- **Exit codes**: `backup restore --to <existing>` is a `CONFLICT` →
+  exit 3 (consistent with P3: any write that lost to existing state);
+  `backup check` exits 1 when the replica is stale or the chain is
+  broken, 0 when the restored temp DB matches the live row counts.
+- **serve integration**: `[backup] destination` makes `crm serve` write
+  the managed config and spawn `litestream replicate --config …` as a
+  child (stdio detached); the child is SIGTERMed on server shutdown. A
+  broken destination logs `backup: continuous replication disabled` and
+  does not fail the server start.
+- **Deferred to release engineering** (needs CI + target machines):
+  prebuilt FUSE/NFS bridge binaries, Windows client build, internal-
+  mirror install doc. The DR exit criterion is testable now: kill the
+  server, restore from the replica, `audit verify` passes on the
+  restored file (`test/enterprise/backup.test.ts`).
+
 ## Test additions (spec-first, before each phase's code)
 
 - `test/enterprise/auth.test.ts` — auth handshake, wrong token, expired
@@ -518,6 +595,12 @@ the CAS machinery (below) makes write-conflict retry a first-class flow.
   (`--limit/--actor/--action/--entity/--since`), JSON shape, `verify`
   exit codes (0 intact / 1 tampered, first broken seq), `export` json/csv
   parity
+- `test/backup-dest.test.ts` + `test/enterprise/backup.test.ts` — (P5)
+  destination parsing (file/s3/invalid), init snapshot, sync advancing the
+  replica, **restore exit criterion** (kill server → restore → `audit
+  verify` green on the restored file + row counts), check, missing-binary
+  guidance, invalid destination, serve spawning continuous replication,
+  remote status/sync via admin RPC + host-only rejection
 - `test/enterprise/serve.test.ts` — boot/health/TLS/cert-reload/restart-
   persistence
 - `test/enterprise/remote.test.ts` — (P2) local-vs-remote output parity

@@ -952,6 +952,52 @@ crm audit export --format csv
 
 ---
 
+### Backups (P5)
+
+Continuous WAL replication via [litestream](https://litestream.io) (v0.5.17,
+pinned) — the replica is a chain of LTX files in a local directory (NAS/
+share) or S3, and `restore` rebuilds a full SQLite file from it. Backup
+operations are **server-host commands**: a remote client gets a clear
+"run on the server host" error for host-only operations.
+
+```bash
+# Binary resolution: LITESTREAM_BIN → PATH → ~/.crm/bin/litestream.
+# --download fetches the pinned release (SHA-256 verified).
+crm backup init --destination /backups/crm            # or s3://bucket/prefix
+
+# One-shot replication pass
+crm backup sync
+
+# Per-DB status (local txid, WAL size)
+crm backup status
+
+# Rebuild a fresh DB file from the replica (refuses to overwrite)
+crm backup restore --to /data/restored-crm.db
+
+# Restore to a temp file, verify the audit chain, compare row counts
+crm backup check
+```
+
+**Continuous replication**: set `[backup] destination` in the server config
+and `crm serve` spawns `litestream replicate` as a child process at startup
+(the process dies with the server):
+
+```toml
+[backup]
+destination = "/backups/crm"
+```
+
+**Remote access**: `backup status` and `backup sync` are admin RPC methods —
+an operator (or an agent with admin credentials) can check replication
+health or force a sync without SSH. `init`, `restore`, and `check` stay
+local by design.
+
+**Restore drill** (the P5 exit criterion): stop the server, `crm backup
+restore --to /data/crm.db.new`, `crm --db /data/crm.db.new audit verify`,
+then swap the file in.
+
+---
+
 ### Import / Export
 
 #### `crm import <entity-type> <file>`

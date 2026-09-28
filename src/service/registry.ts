@@ -11,6 +11,7 @@ import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { activityList, activityLog } from './activity'
 import { auditExport, auditList, auditVerify } from './audit'
+import { backupStatus, backupSync } from './backup'
 import {
   companyAdd,
   companyEdit,
@@ -129,6 +130,9 @@ export const METHODS: Record<string, MethodDef> = {
   'audit.list': { minRole: 'reader', write: false, fn: auditList },
   'audit.verify': { minRole: 'reader', write: false, fn: auditVerify },
   'audit.export': { minRole: 'reader', write: false, fn: auditExport },
+  // ── backup (P5): status/sync over RPC; init/restore/check are local-only ──
+  'backup.status': { minRole: 'admin', write: false, fn: backupStatus },
+  'backup.sync': { minRole: 'admin', write: true, fn: backupSync },
   // ── search / index ──
   'search.search': { minRole: 'reader', write: false, fn: searchFts },
   'search.find': { minRole: 'reader', write: false, fn: findSemantic },

@@ -4,6 +4,14 @@ import { loadConfig } from '../config'
 import { openDB } from '../db'
 import * as schema from '../drizzle-schema'
 import { die, gConfig, gDb } from '../lib/helpers'
+import {
+  configPathFor,
+  parseDestination,
+  renderConfig,
+  replicaUrl,
+  resolveLitestream,
+  startReplicateDaemon,
+} from '../lib/litestream'
 import { generateBootstrapCode } from '../lib/secrets'
 import { startServer } from '../server/serve'
 
@@ -39,6 +47,28 @@ export function registerServeCommand(program: Command): void {
         const port =
           opts.port === undefined ? config.serve.port : Number(opts.port)
         const host = opts.host ?? config.serve.host
+        // P5: continuous litestream replication when a backup destination
+        // is configured. The daemon is a child of this process — it dies
+        // with the server and is written from the same config.
+        let replica: { close: () => void } | null = null
+        if (config.backup.destination) {
+          try {
+            const dest = parseDestination(config.backup.destination)
+            const configPath = configPathFor(config.database.path)
+            const { writeFileSync, mkdirSync } = await import('node:fs')
+            const bin = resolveLitestream()
+            writeFileSync(configPath, renderConfig(config.database.path, dest))
+            if (dest.kind === 'file' && dest.path) {
+              mkdirSync(dest.path, { recursive: true })
+            }
+            replica = startReplicateDaemon(bin, configPath)
+            console.log(`backup replication started → ${replicaUrl(dest)}`)
+          } catch (e) {
+            console.error(
+              `backup: continuous replication disabled (${(e as Error).message})`,
+            )
+          }
+        }
         try {
           const server = await startServer({
             db,
@@ -57,6 +87,7 @@ export function registerServeCommand(program: Command): void {
           }
           const shutdown = () => {
             console.log('shutting down…')
+            replica?.close()
             server.close(() => process.exit(0))
             setTimeout(() => process.exit(0), 3000).unref()
           }

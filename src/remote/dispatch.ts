@@ -9,7 +9,9 @@
  * In remote mode no local database is ever opened: the CLI renders the
  * server's response locally.
  */
+import type { CRMConfig } from '../config'
 import { loadConfig } from '../config'
+import type { DB } from '../db'
 import { openDB } from '../db'
 import { auditMeta, auditSnapshot, osUserName, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
@@ -159,6 +161,29 @@ async function getLocalCtx() {
   const config = loadConfig({ configPath: gConfig, dbPath: gDb, format: gFmt })
   const db = await openDB(config.database.path)
   return { config, db, fmt: config.defaults.format }
+}
+
+/**
+ * Run a method exclusively in local mode (no RPC surface). Errors get the
+ * same treatment as `dispatch` (ServiceError → die with exit-code mapping).
+ */
+export async function localOnly<T extends Record<string, unknown>>(
+  fn: (db: DB, config: CRMConfig) => Promise<T>,
+): Promise<T> {
+  if (isRemote()) {
+    die(
+      'Error: this command runs on the server host — SSH into the machine that owns the database and run it there',
+    )
+  }
+  const { db, config } = await getLocalCtx()
+  try {
+    return await fn(db, config)
+  } catch (e) {
+    if (e instanceof ServiceError) {
+      die(e.message, e.code === 'CONFLICT' ? 3 : 1)
+    }
+    throw e
+  }
 }
 
 /** Local-mode ctx for commands that still need fmt/config for rendering. */

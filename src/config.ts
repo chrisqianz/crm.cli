@@ -11,6 +11,13 @@ export interface CRMConfig {
     lockout_minutes: number
     password_min_length: number
   }
+  /**
+   * P5 litestream backup. When `destination` is set (local path or
+   * s3://bucket/prefix), `crm serve` spawns a continuous `litestream
+   * replicate` child process at startup; one-shot operations use
+   * `crm backup sync`.
+   */
+  backup: { destination: string }
   database: { path: string }
   defaults: { format: string }
   hooks: Record<string, string>
@@ -46,6 +53,7 @@ const DEFAULT_STAGES = [
 
 function defaultConfig(): CRMConfig {
   return {
+    backup: { destination: '' },
     database: { path: join(homedir(), '.crm', 'crm.db') },
     pipeline: {
       stages: [...DEFAULT_STAGES],
@@ -137,6 +145,14 @@ function mergeConfig(
       ...(override.remote.server ? { server: override.remote.server } : {}),
       ...(override.remote.insecure
         ? { insecure: override.remote.insecure }
+        : {}),
+    }
+  }
+  if (override.backup) {
+    result.backup = {
+      ...result.backup,
+      ...(override.backup.destination
+        ? { destination: override.backup.destination }
         : {}),
     }
   }
