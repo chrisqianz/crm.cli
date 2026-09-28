@@ -85,6 +85,16 @@ Config is loaded from `crm.toml`. Resolution order (first match wins):
 
 This means you can drop a `crm.toml` in your project root and it applies to everyone working in that directory — just like `.gitignore` or `biome.jsonc`.
 
+**Not everything is trusted from there.** Options 3 (and only option 3) is a
+file found by *searching*, so it can arrive with a cloned repository, and a
+`crm.toml` you did not write must not get to decide who may log in. A
+project-discovered config therefore cannot supply `[hooks]` without an
+explicit `enabled = true` marker (arbitrary code execution), and cannot
+supply `[auth]` or `[ldap]` at all (authentication authority): `crm serve`
+refuses to start, every other command warns and ignores those sections.
+Serve the settings you care about from a file selected with `--config` /
+`CRM_CONFIG`, or from `~/.crm/config.toml`.
+
 ```bash
 # Project-scoped config
 echo '[pipeline]
@@ -256,6 +266,9 @@ host = "127.0.0.1"      # keep loopback; front with a TLS reverse proxy
 lockout_threshold = 5     # failed logins before lockout
 lockout_minutes = 15
 password_min_length = 12
+login_rate_per_minute = 60       # login attempts per client IP (0 = unlimited)
+login_user_rate_per_minute = 15  # …and per IP+username pair (0 = unlimited)
+default_role = "none"            # role for a directory user in no mapped group
 ```
 
 `GET /healthz` on the same port answers `{"ok":true}` for load balancers.
@@ -1019,11 +1032,22 @@ bind_dn = "cn=crm-service,ou=service,dc=company,dc=com"
 bind_password_env = "CRM_LDAP_BIND_PASSWORD"   # read from the environment, never config
 user_filter = "(uid={username})"              # AD: (sAMAccountName={username})
 group_base_dn = "ou=groups,dc=company,dc=com"  # default: base_dn
+timeout_ms = 5000                             # per bind/search deadline
+connect_timeout_ms = 3000                     # TCP connect deadline
+tls_ca_file = "/etc/crm/ldap-ca.pem"          # CA that signed the directory cert
+tls_skip_verify = false                       # lab directories only; logged at boot
 
 [ldap.roles]                          # group DN → CRM role
 "CN=Crm-Admins,OU=Groups,DC=company,DC=com" = "admin"
 "CN=Crm-Writers,OU=Groups,DC=company,DC=com" = "writer"
 ```
+
+`[ldap]` and `[auth]` are only honoured from a **trusted** config: one
+selected with `--config` / `$CRM_CONFIG`, or the global
+`~/.crm/config.toml`. A `crm.toml` discovered by walking up from the current
+directory may not define them — `crm serve` refuses to start and says why,
+because that file could have arrived with a cloned repository. See
+[Configuration](#configuration).
 
 **Behaviour**
 
@@ -1035,16 +1059,50 @@ group_base_dn = "ou=groups,dc=company,dc=com"  # default: base_dn
   Usernames that do not resolve in the directory keep local auth.
 - **Unreachable directory** — a clean `AUTH: directory is unreachable` error;
   no silent fallback to local passwords, an audit row is written, and the
-  login simply fails until the directory is back. Connection hiccups retry
-  twice; wrong passwords never retry.
+  login simply fails until the directory is back. Service-account lookups
+  retry twice on connection hiccups; a password verify is exactly one bind,
+  never a retry.
+- **Deadlines** — every bind and search is bounded by `timeout_ms` /
+  `connect_timeout_ms` (ldapts itself defaults to *no* timeout, so a
+  directory that accepts the connection and stops answering would otherwise
+  hold the login — and the client — open forever). Non-positive values are
+  refused at boot.
+- **Ambiguous identity** — a username whose filter matches more than one
+  entry is refused (`AUTH: … ambiguous in the directory`) rather than
+  resolved to whichever entry came back first. The search is capped at two
+  entries so this cannot pull a department into memory.
 - **Role from groups** — the entry's group memberships are mapped through
   `[ldap.roles]` (highest ranked mapped group wins); no mapped group →
-  `auth.default_role` (default `none`, which can read nothing).
-- **TLS is mandatory** — plain `ldap://` without `starttls = true` refuses to
-  boot (`crm serve` exits with a clear error). `ldaps://` and StartTLS both
-  work. `CRM_ALLOW_INSECURE_LDAP=1` is a local/test-only escape hatch.
+  `auth.default_role` (default `none`, which can read nothing). An unknown
+  role name in either place is a boot error, not a silent downgrade.
+- **Usernames are case-insensitive** — directories match `uid` ignoring case
+  (LDAP `caseIgnoreMatch`) and JIT provisioning stores the directory's own
+  `uid`, lowercased. `crm serve` also adds a case-insensitive unique index
+  on `users.username`, so `alice` / `ALICE` is one account and `disable`
+  cannot be stepped around by changing a letter's case.
+- **Login throttling** — `[auth] login_rate_per_minute` (default 60 per
+  client IP) and `login_user_rate_per_minute` (default 15 per IP+username)
+  cap attempts per minute; `0` disables. Directory logins do not touch the
+  CRM lockout counters (the directory owns that policy), so this is what
+  stops the server forwarding an unbounded brute-force rate at your
+  directory. Throttled attempts write an `auth.rate-limited` audit row. The
+  client IP is the **socket** address — `X-Forwarded-For` is deliberately
+  not believed, so when a reverse proxy makes every login arrive from one
+  address, raise the per-IP figure to what that many users actually
+  generate (per-username and per-account lockout still apply).
+- **TLS is mandatory and verified** — plain `ldap://` without
+  `starttls = true` refuses to boot (`crm serve` exits with a clear error);
+  `ldaps://` and StartTLS both work. Certificates are **verified** by
+  default: point `tls_ca_file` at the issuing CA, or use
+  `tls_skip_verify = true` for a lab directory (a boot warning says so out
+  loud). `CRM_ALLOW_INSECURE_LDAP=1` is a local/test-only escape hatch for
+  the transport rule only.
 - **Incident response** — `crm admin user disable --username <dir-user>`
   blocks a directory user locally without touching the directory.
+- **`set-role` does not apply to directory users** — their role is recomputed
+  from group membership at every login, so `crm admin user set-role` refuses
+  with a message pointing at the group mapping rather than writing a value
+  that the next login would undo.
 
 The service-account password must be present in the server process
 environment (the env var named by `bind_password_env`) before `crm serve`

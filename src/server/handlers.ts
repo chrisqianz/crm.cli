@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 import type { CRMConfig } from '../config'
@@ -7,7 +7,13 @@ import type { User } from '../drizzle-schema'
 import * as schema from '../drizzle-schema'
 import { auditMeta, auditSnapshot, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
-import { openDirectory, roleForGroups } from '../lib/ldap'
+import {
+  AmbiguousIdentityError,
+  type LdapDirectory,
+  type LdapUser,
+  openDirectory,
+  roleForGroups,
+} from '../lib/ldap'
 import {
   generatePassword,
   generateToken,
@@ -76,8 +82,15 @@ async function findUser(db: DB, username: string): Promise<User | null> {
   const rows = await db
     .select()
     .from(schema.users)
-    .where(eq(schema.users.username, username))
-  return rows[0] ?? null
+    .where(sql`lower(${schema.users.username}) = lower(${username})`)
+    .limit(5)
+  if (rows.length === 0) {
+    return null
+  }
+  // a database created before the case-insensitive index may hold rows
+  // differing only by case: prefer the disabled one, so a leftover
+  // duplicate can never be the row that authenticates
+  return rows.find((r) => r.disabled_at) ?? rows[0]
 }
 
 async function findUserById(db: DB, id: string): Promise<User | null> {
@@ -119,42 +132,156 @@ export function handleAuth(
   throw new ServerError('AUTH', 'first frame must be an auth method')
 }
 
+/**
+ * Service-account lookup, with the two directory-side failures named as
+ * themselves. Both end the login: an unreachable directory has no
+ * fallback by design, and an ambiguous match must not be settled by
+ * taking whoever the directory happened to return first.
+ */
+async function lookupDirectoryUser(
+  db: DB,
+  ctx: { ip: string },
+  dir: LdapDirectory,
+  username: string,
+): Promise<LdapUser | null> {
+  try {
+    return await dir.lookupUser(username)
+  } catch (e) {
+    const ambiguous = e instanceof AmbiguousIdentityError
+    await recordAudit(db, {
+      actor_id: '',
+      actor_name: username,
+      action: 'auth.login-failed',
+      source: 'rpc',
+      ip: ctx.ip,
+      after_json: JSON.stringify({
+        reason: ambiguous ? 'ambiguous-identity' : 'ldap-unreachable',
+        username,
+      }),
+    }).catch(() => undefined)
+    throw new ServerError(
+      'AUTH',
+      ambiguous
+        ? 'that username is ambiguous in the directory — contact an administrator'
+        : 'directory is unreachable — login is unavailable until it is back',
+    )
+  }
+}
+
+// ── Identity and login throttling ──
+
+/**
+ * CRM identities are stored lowercase. The directory matches names
+ * case-insensitively (LDAP `caseIgnoreMatch`), SQLite's UNIQUE does not,
+ * and humans type `Alice` — normalizing at every entry point stops those
+ * three from agreeing on different rows.
+ */
+function normalizeUsername(raw: string): string {
+  return raw.trim().toLowerCase()
+}
+
+/**
+ * Sliding-window login counters, per process. Directory-backed logins
+ * never touch the CRM lockout counters (the directory owns that policy),
+ * so without this the server would forward an unbounded brute-force rate
+ * at the corporate directory — which is how a company gets locked out.
+ * Attempts are counted, not failures, so this doubles as no oracle: the
+ * reply is identical whichever username was tried.
+ */
+const loginAttempts = new Map<string, number[]>()
+const ATTEMPT_WINDOW_MS = 60_000
+const MAX_TRACKED_KEYS = 10_000
+
+function rateValue(configured: number, fallback: number): number {
+  return Number.isFinite(configured) && configured >= 0 ? configured : fallback
+}
+
+function allowAttempt(key: string, limit: number): boolean {
+  if (limit <= 0) {
+    return true
+  }
+  const now = Date.now()
+  const recent = (loginAttempts.get(key) ?? []).filter(
+    (t) => now - t < ATTEMPT_WINDOW_MS,
+  )
+  if (recent.length >= limit) {
+    loginAttempts.set(key, recent)
+    return false
+  }
+  recent.push(now)
+  loginAttempts.set(key, recent)
+  if (loginAttempts.size > MAX_TRACKED_KEYS) {
+    // keys come from the network: spoofed IPs must be able to grow this
+    // map without bound, so stale ones are dropped when it gets large
+    for (const [k, times] of loginAttempts) {
+      const last = times.at(-1) ?? 0
+      if (times.length === 0 || now - last >= ATTEMPT_WINDOW_MS) {
+        loginAttempts.delete(k)
+      }
+    }
+  }
+  return true
+}
+
+async function consumeLoginAttempt(
+  db: DB,
+  config: CRMConfig,
+  ctx: { ip: string },
+  username: string,
+): Promise<void> {
+  const ipLimit = rateValue(config.auth.login_rate_per_minute, 60)
+  const userLimit = rateValue(config.auth.login_user_rate_per_minute, 15)
+  const allowed =
+    allowAttempt(`ip:${ctx.ip}`, ipLimit) &&
+    allowAttempt(`u:${ctx.ip}|${username}`, userLimit)
+  if (allowed) {
+    return
+  }
+  await recordAudit(db, {
+    actor_id: '',
+    actor_name: username,
+    action: 'auth.rate-limited',
+    source: 'rpc',
+    ip: ctx.ip,
+    after_json: JSON.stringify({ ip_limit: ipLimit, user_limit: userLimit }),
+  }).catch(() => undefined)
+  throw new ServerError('AUTH', 'too many login attempts — try again later')
+}
+
 async function authLogin(
   db: DB,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
   params: Record<string, unknown>,
 ): Promise<AuthResult> {
-  const username = strParam(params, 'username')
+  const username = normalizeUsername(strParam(params, 'username'))
   const password = strParam(params, 'password')
+  await consumeLoginAttempt(db, config, ctx, username)
 
   // P6: when the directory is configured it wins for usernames that
   // resolve in it — including a same-named local account. A directory
   // outage is a hard AUTH error (no silent fallback to local passwords).
   if (config.ldap.enabled) {
+    const dir = openDirectory(config)
     try {
-      const dir = openDirectory(config)
-      try {
-        const entry = await dir.lookupUser(username)
-        if (entry) {
-          return directoryLogin(db, config, ctx, dir, username, password, entry)
-        }
-      } finally {
-        await dir.close()
+      const entry = await lookupDirectoryUser(db, ctx, dir, username)
+      if (entry) {
+        // Deliberately outside lookupDirectoryUser's error handling: a
+        // failed *login* (bad password, disabled account) says something
+        // different from an unreachable directory and must not be
+        // reported as one.
+        return await directoryLogin(
+          db,
+          config,
+          ctx,
+          dir,
+          username,
+          password,
+          entry,
+        )
       }
-    } catch {
-      await recordAudit(db, {
-        actor_id: '',
-        actor_name: username,
-        action: 'auth.login-failed',
-        source: 'rpc',
-        ip: ctx.ip,
-        after_json: JSON.stringify({ reason: 'ldap-unreachable', username }),
-      }).catch(() => undefined)
-      throw new ServerError(
-        'AUTH',
-        'directory is unreachable — login is unavailable until it is back',
-      )
+    } finally {
+      await dir.close()
     }
   }
 
@@ -255,31 +382,46 @@ async function directoryLogin(
   db: DB,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
-  dir: LdapDirectoryLike,
+  dir: LdapDirectory,
   username: string,
   password: string,
-  entry: LdapUserLike,
+  entry: LdapUser,
 ): Promise<AuthResult> {
+  // The directory's own id is the identity, normalized: a filter on mail
+  // (or anything else) must not provision a CRM user under whatever the
+  // caller typed, and case variants must land on one row.
+  const identity = normalizeUsername(entry.username || username)
   const ok = await dir.verifyPassword(entry.dn, password)
   if (!ok) {
     await recordAudit(db, {
       actor_id: '',
-      actor_name: username,
+      actor_name: identity,
       action: 'auth.login-failed',
       source: 'rpc',
       ip: ctx.ip,
       after_json: JSON.stringify({
         reason: 'directory-bad-password',
-        username,
+        username: identity,
       }),
     }).catch(() => undefined)
     throw new ServerError('AUTH', 'invalid credentials')
   }
 
-  const existing = await findUser(db, username)
+  const existing = await findUser(db, identity)
   // disabled_at is enforced locally even for directory users (incident
-  // response without touching the directory)
+  // response without touching the directory). Audited, or the most
+  // security-relevant rejection in the whole flow is invisible.
   if (existing?.disabled_at) {
+    await recordAudit(db, {
+      actor_id: existing.id,
+      actor_name: existing.username,
+      action: 'auth.login-failed',
+      source: 'rpc',
+      ip: ctx.ip,
+      entity_type: 'user',
+      entity_id: existing.id,
+      after_json: JSON.stringify({ reason: 'disabled' }),
+    }).catch(() => undefined)
     throw new ServerError('AUTH', 'account is disabled')
   }
 
@@ -301,7 +443,7 @@ async function directoryLogin(
         locked_until: null,
       })
       .where(eq(schema.users.id, existing.id))
-    const refreshed = await findUser(db, username)
+    const refreshed = await findUser(db, identity)
     if (!refreshed) {
       throw new ServerError('INTERNAL', 'user row vanished after update')
     }
@@ -309,7 +451,7 @@ async function directoryLogin(
   } else {
     await db.insert(schema.users).values({
       id: `usr_${ulid()}`,
-      username,
+      username: identity,
       display_name: entry.displayName || null,
       email: entry.email || null,
       auth_source: 'ldap',
@@ -321,7 +463,7 @@ async function directoryLogin(
       created_at: new Date().toISOString(),
       disabled_at: null,
     })
-    const created = await findUser(db, username)
+    const created = await findUser(db, identity)
     if (!created) {
       throw new ServerError('INTERNAL', 'JIT provisioning failed')
     }
@@ -347,16 +489,6 @@ async function directoryLogin(
     identity: { id: user.id, username: user.username, role: user.role },
     result: { token, user: publicUser(user) },
   }
-}
-
-interface LdapDirectoryLike {
-  groupDns(memberDn: string): Promise<string[]>
-  verifyPassword(dn: string, password: string): Promise<boolean>
-}
-interface LdapUserLike {
-  displayName: string
-  dn: string
-  email: string
 }
 
 async function authToken(
@@ -414,7 +546,9 @@ async function authBootstrap(
       'bootstrap is only available while the users table is empty',
     )
   }
-  const username = strParam(params, 'username')
+  // normalized before the pattern check: the pattern is lowercase, and
+  // an operator typing `Alice` at bootstrap means the same identity
+  const username = normalizeUsername(strParam(params, 'username'))
   if (!USERNAME_RE.test(username)) {
     throw new ServerError(
       'INVALID',
@@ -591,7 +725,7 @@ async function adminUserCreate(
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const username = strParam(params, 'username')
+  const username = normalizeUsername(strParam(params, 'username'))
   if (!USERNAME_RE.test(username)) {
     throw new ServerError(
       'INVALID',
@@ -677,6 +811,15 @@ async function adminUserSetRole(
   const u = await findUser(db, username)
   if (!u) {
     throw new ServerError('NOT_FOUND', `user "${username}" not found`)
+  }
+  if (u.auth_source === 'ldap') {
+    // Directory roles are recomputed from group membership at every
+    // login, so a set-role here would be silently undone hours later.
+    // Saying so beats writing a value that is about to lose.
+    throw new ServerError(
+      'INVALID',
+      `${u.username} authenticates against the directory — its role follows group membership. Change the group in the directory ([ldap.roles] maps it); set-role would be reverted on the next login. Use disable to cut access immediately.`,
+    )
   }
   await db.update(schema.users).set({ role }).where(eq(schema.users.id, u.id))
   const updated = await findUser(db, username)

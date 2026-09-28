@@ -155,6 +155,7 @@ export async function openDB(dbPath: string): Promise<DB> {
   await busyExec(client, 'PRAGMA foreign_keys=ON')
 
   await migrateSchema(client)
+  await ensureUsernameIndex(client)
 
   return db
 }
@@ -261,6 +262,41 @@ export async function upsertSearchIndex(
   await db.run(
     sql`INSERT INTO search_index (entity_type, entity_id, content) VALUES (${entityType}, ${entityId}, ${content})`,
   )
+}
+
+/**
+ * Usernames are looked up case-insensitively, because the directory that
+ * JIT-provisions them matches case-insensitively (LDAP `caseIgnoreMatch`)
+ * while SQLite's `UNIQUE` does not. Uniqueness has to be enforced on the
+ * lowercase name too, or `alice` and `ALICE` are two accounts and
+ * disabling one leaves the other usable.
+ *
+ * Best-effort by necessity: a database that already holds both spellings
+ * cannot accept the index, and refusing to open the database would lock
+ * every user out over a row an admin can delete. The conflict is reported
+ * instead — and the case-insensitive lookup prefers the disabled row, so
+ * the leftover duplicate cannot become the row that authenticates.
+ */
+async function ensureUsernameIndex(
+  client: ReturnType<typeof createClient>,
+): Promise<void> {
+  try {
+    await busyExec(
+      client,
+      'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_ci ON users(username COLLATE NOCASE)',
+    )
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      /UNIQUE constraint failed|already contains data/i.test(err.message)
+    ) {
+      console.warn(
+        'Warning: users hold usernames differing only by case, so case-insensitive uniqueness is not enforced. Fix with e.g. `SELECT username FROM users GROUP BY lower(username) HAVING count(*) > 1` — until then a differently-cased duplicate can log in.',
+      )
+      return
+    }
+    throw err
+  }
 }
 
 export async function removeSearchIndex(

@@ -24,6 +24,19 @@ ExecStart=/usr/local/bin/bun /opt/crm/dist/cli.js serve
 Restart=on-failure
 RestartSec=2
 
+# Config: name the file explicitly. `crm serve` refuses [auth]/[ldap] from a
+# crm.toml it finds by walking up from WorkingDirectory (that file can arrive
+# with a clone), so authentication settings must come from a config it trusts.
+# Being explicit also stops a stray /opt/crm/crm.toml from being read.
+Environment=CRM_CONFIG=/opt/crm-home/.crm/config.toml
+
+# Directory login needs the service-account password in the process
+# environment. Keep it out of this unit file (world-readable) — chmod 600
+# the env file and let systemd read it:
+#   echo 'CRM_LDAP_BIND_PASSWORD=...' | sudo tee /etc/crm/ldap.env
+#   sudo chmod 600 /etc/crm/ldap.env
+# EnvironmentFile=/etc/crm/ldap.env
+
 # --- Hardening -------------------------------------------------------------
 NoNewPrivileges=true
 PrivateTmp=true

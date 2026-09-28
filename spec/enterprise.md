@@ -123,17 +123,26 @@ is retained only as an optional later add-on (same `users` table, third
   bind_password_env = "CRM_LDAP_BIND_PASSWORD"  # never inline in config
   user_filter = "(sAMAccountName={username})"  # AD-style; any RFC 2254 filter
   group_base_dn = "ou=groups,dc=company,dc=com"
+  timeout_ms = 5000                      # per bind/search deadline (no ldapts default)
+  connect_timeout_ms = 3000
+  tls_ca_file = "/etc/crm/ldap-ca.pem"   # trust anchors; system store if unset
+  tls_skip_verify = false                # verification is ON unless set true
 
   [ldap.roles]                       # group DN → CRM role (RBAC bridge)
   "cn=crm-admins,ou=groups,dc=company,dc=com" = "admin"
   "cn=crm-writers,ou=groups,dc=company,dc=com" = "writer"
   ```
 
+  `[auth]` and `[ldap]` must come from a trusted config (`--config` /
+  `CRM_CONFIG` / `~/.crm/config.toml`) — never from a `crm.toml` discovered by
+  walking up from the cwd.
+
 - Flow is the standard two-step: bind as service account → search under
   `base_dn` with the escaped filter → bind as the found entry to verify the
   password. All user input goes through the library's escaping — no
   hand-built LDAP strings (injection). TLS is mandatory (`ldaps://` or
-  StartTLS); plain `ldap://` without StartTLS is refused at boot.
+  StartTLS); plain `ldap://` without StartTLS is refused at boot, and
+  certificates are verified unless `tls_skip_verify` says otherwise.
 - First successful directory login **JIT-provisions** the local row
   (`auth_source = "ldap"`, `ldap_dn` recorded, username/display/email from
   the entry). Role comes from group membership via `[ldap.roles]`; a user in
@@ -585,11 +594,27 @@ authority for role and token. Flow on every `auth.login` when `[ldap] enabled`:
    same-named local account exists). Any *other* failure (connection drop, TLS
    error) → `AUTH: directory is unreachable`, with an audit row
    `auth.login-failed { reason: "ldap-unreachable" }`. Connection-layer errors
-   retry twice with backoff; authentication failures never retry.
-3. **Role from groups** — the entry's group memberships are read from
+   retry twice with backoff on the **service-account** operations only; the
+   user's password bind is exactly one request and never retries (a directory
+   that reports some wrong passwords as a generic error would otherwise see
+   three binds per login). Every operation carries `timeout_ms` /
+   `connect_timeout_ms`, because ldapts itself defaults to *no* timeout and a
+   black-holed directory would otherwise hold the login open indefinitely.
+3. **Identity** — the CRM username comes from the entry's `uid`
+   (`sAMAccountName` on AD), lowercased and trimmed, not from whatever the
+   caller typed. Directories match `uid` with `caseIgnoreMatch` while SQLite's
+   `UNIQUE` is case-sensitive, so `users.username` also carries a
+   case-insensitive unique index (added best-effort at open: a database that
+   already holds both spellings is reported rather than silently keeping two
+   accounts, and a case-insensitive lookup prefers the disabled row).
+4. **Role from groups** — the entry's group memberships are read from
    `group_base_dn` (AD-style `member`, plus `uniqueMember`) and mapped through
    `[ldap.roles]` (highest ranked mapped group wins); no mapped group →
    `auth.default_role` (default `none`, which grants **no** data access).
+   Role names in `[ldap.roles]` / `auth.default_role` are validated against
+   `VALID_ROLE_NAMES` at boot — a typo must not silently mean "no
+   privileges". One ranking ladder (`roleRank`) serves both RBAC and this
+   mapping.
 
 - **JIT provisioning** — first successful directory login creates the row
   (`auth_source = "ldap"`, `ldap_dn` recorded, username/display/email from the
@@ -598,10 +623,43 @@ authority for role and token. Flow on every `auth.login` when `[ldap] enabled`:
 - **Local disable is authoritative** — `admin.user.disable` on a directory user
   is enforced locally (`disabled_at`), giving incident response without
   touching the directory.
+- **Ambiguous identity is refused** — `user_filter` is searched with
+  `sizeLimit = 2`; more than one match ends the login with
+  `AUTH: … ambiguous in the directory` + an
+  `auth.login-failed { reason: "ambiguous-identity" }` row. Taking
+  `searchEntries[0]` would authenticate one person as another.
+- **Login throttling** — `auth.login` is capped at
+  `auth.login_rate_per_minute` attempts per client IP and
+  `login_user_rate_per_minute` per (IP, username) pair (defaults 60 / 15,
+  `0` disables), sliding 60s window, in-process, counted on *attempts* so it
+  is not a username oracle. The key is the socket address, not
+  `X-Forwarded-For` — a client-chosen header would make the limit evadable,
+  at the cost of one shared bucket behind a proxy (raise the per-IP figure
+  there). Directory logins deliberately skip the CRM lockout
+  counters, so this is the only thing between a client and your directory's
+  own lockout policy. Throttling writes `auth.rate-limited`.
+- **`set-role` does not apply to directory users** — their role is recomputed
+  from group membership on every login, so `admin.user.set-role` refuses with
+  a pointer to the group mapping instead of writing a value that the next
+  login would undo. `disable` remains the immediate local kill switch.
 - **TLS** — plain `ldap://` without `starttls = true` is refused **at boot**
   (`crm serve` fails to start). `ldaps://` and StartTLS both work. An explicit
   `CRM_ALLOW_INSECURE_LDAP=1` escape hatch exists for local/in-docker test
-  directories only.
+  directories only. Certificate **verification** is on by default: trust
+  anchors come from the system store or `tls_ca_file`, and only
+  `tls_skip_verify = true` turns verification off — which `crm serve` shouts
+  about at boot rather than doing quietly.
+- **Config trust boundary** — `[auth]` and `[ldap]` are honoured only from a
+  trusted config (`--config` / `CRM_CONFIG`, or `~/.crm/config.toml`). A
+  `crm.toml` discovered by walking up from the cwd is stripped of both
+  sections (`loadConfig` warns; `crm serve` refuses to start), because
+  discovery reaches files that arrive with a cloned repository and
+  `[ldap]`/`default_role` decide who may log in and as what — a
+  same-named-directory attack on any server started from a checkout. This is
+  the same reasoning that already gates `[hooks]`, applied more strictly:
+  a self-declared marker would not do, since the marker lives in the
+  untrusted file too. `config.config_meta` records `{ path, trusted,
+  dropped_auth_authority }`.
 - **`none` is a real role** — `roleAllows` now treats `none` (and any
   unrecognized role) as rank 0, below `reader`, so a default-role-`none` user
   gets `FORBIDDEN` on every data method.
@@ -621,7 +679,18 @@ data-subject export/delete, token expiry policy, optional OIDC device-code.
   (e.g. osixia/openldap), JIT provisioning + dn/email capture, group→role
   mapping, no-group default-deny, injection-style usernames rejected,
   unreachable directory → clean `AUTH` error (no crash, no fallback to
-  local password)
+  local password), case-variant login cannot step around `disable`,
+  ambiguous filter refused, stalled directory fails within its deadline
+  instead of hanging, `set-role` refused for a directory user
+- `test/enterprise/ldap-config.test.ts` — `[ldap]` boot validation without a
+  directory (transport refusal, required fields, role-name typos, CA file,
+  timeouts), TLS defaults, timeout bounds, group→role ladder
+- `test/enterprise/config-trust.test.ts` — discovered configs cannot supply
+  `[auth]`/`[ldap]` (serve refuses, nested cwd, other commands warn and
+  continue), identical content accepted from an explicit config
+- `test/enterprise/rate-limit.test.ts` — per-username and per-IP caps, `0`
+  disables, throttling neither locks the account nor invalidates issued
+  tokens
 - `test/enterprise/rbac.test.ts` — full role matrix, incl. cross-role read
   filtering
 - `test/enterprise/concurrency.test.ts` — two clients, same entity, same

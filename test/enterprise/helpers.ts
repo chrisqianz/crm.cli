@@ -1,5 +1,5 @@
 import { type ChildProcess, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -23,9 +23,24 @@ export interface TestServer {
  * The server prints `READY <port>` to stdout once the TLS listener is up,
  * and `BOOTSTRAP-CODE=<code>` when the users table is empty.
  */
+export interface StartServerOptions {
+  /** TOML written to a temp file and passed as CRM_CONFIG (trusted config). */
+  configBody?: string
+  /** Existing config file to pass as CRM_CONFIG (trusted config). */
+  configPath?: string
+  /**
+   * Run the server with this cwd and leave CRM_CONFIG unset, so the server
+   * resolves its config by walking up from `cwd` — the semi-trusted
+   * project-config path (see test/enterprise/config-trust.test.ts).
+   */
+  cwd?: string
+  /** Extra environment for the server process (merged over process.env). */
+  env?: Record<string, string>
+}
+
 export async function startServer(
   dbPath: string,
-  opts?: { configPath?: string; configBody?: string },
+  opts?: StartServerOptions,
 ): Promise<TestServer> {
   let configPath = opts?.configPath
   if (opts?.configBody !== undefined) {
@@ -33,25 +48,28 @@ export async function startServer(
       mkdtempSync(join(tmpdir(), 'crm-serve-cfg-')),
       'server.toml',
     )
-    require('node:fs').writeFileSync(configPath, opts.configBody)
+    writeFileSync(configPath, opts.configBody)
+  }
+  const { CRM_CONFIG: _explicitConfig, ...baseEnv } = process.env
+  const env: Record<string, string | undefined> = {
+    ...baseEnv,
+    NO_COLOR: '1',
+    ...(opts?.env ?? {}),
+  }
+  if (!opts?.cwd) {
+    // /dev/null-ish: an unset path would let the server pick up whatever
+    // crm.toml sits above the repo (or create ~/.crm/config.toml). With a
+    // cwd given, CRM_CONFIG must stay *absent* — project-config discovery
+    // only happens when nothing explicitly selects a file.
+    env.CRM_CONFIG = configPath ?? ''
   }
   const proc = spawn(
     'bun',
     ['run', CRM, 'serve', '--port', '0', '--db', dbPath],
     {
-      cwd: REPO,
+      cwd: opts?.cwd ?? REPO,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        NO_COLOR: '1',
-        // in-docker LDAP (P6 tests) speaks plain ldap:// on a loopback
-        // port; production servers must use ldaps:// or StartTLS
-        CRM_ALLOW_INSECURE_LDAP: '1',
-        // service-account password for the P6 test directory (the real
-        // deployment reads this from the environment, never config)
-        CRM_LDAP_BIND_PASSWORD: 'svc-pw-1',
-        CRM_CONFIG: configPath ?? '',
-      },
+      env,
     },
   )
   let out = ''

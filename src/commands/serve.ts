@@ -1,10 +1,10 @@
 import type { Command } from 'commander'
 
-import { loadConfig } from '../config'
+import { loadConfig, projectAuthConfigWarning } from '../config'
 import { openDB } from '../db'
 import * as schema from '../drizzle-schema'
 import { die, gConfig, gDb } from '../lib/helpers'
-import { validateLdapConfig } from '../lib/ldap'
+import { ldapWarnings, validateLdapConfig } from '../lib/ldap'
 import {
   configPathFor,
   parseDestination,
@@ -36,12 +36,25 @@ export function registerServeCommand(program: Command): void {
         key?: string
       }) => {
         const config = loadConfig({ configPath: gConfig, dbPath: gDb })
+        // A project-discovered config that tried to define login
+        // authority was stripped (loadConfig warns). Here that is fatal:
+        // an operator who wrote [ldap] into crm.toml means to authenticate
+        // against that directory, and silently serving a different auth
+        // model is the failure mode this whole path exists to close.
+        if (config.config_meta.dropped_auth_authority) {
+          die(
+            `Error: refusing to start — ${projectAuthConfigWarning(config.config_meta.path)}`,
+          )
+        }
         // P6: an enabled [ldap] section must be fully valid before we
         // serve — a broken directory config is a boot failure, not a
         // runtime surprise.
         const ldapErr = validateLdapConfig(config)
         if (ldapErr) {
           die(`Error: ${ldapErr}`)
+        }
+        for (const warning of ldapWarnings(config)) {
+          console.error(`Warning: ${warning}`)
         }
         const db = await openDB(config.database.path)
         const users = await db

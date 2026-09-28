@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
+import { type AddressInfo, createServer } from 'node:net'
 
 import { bootstrapOwner, connect, freshDb, REPO, startServer } from './helpers'
 
@@ -20,6 +21,16 @@ const ADMIN_PASS = 'admin'
 const BASE = 'dc=example,dc=com'
 const PEOPLE = `ou=people,${BASE}`
 const GROUPS = `ou=groups,${BASE}`
+
+/**
+ * Directory-specific environment, scoped to this file on purpose: `crm
+ * serve` refuses plain ldap:// without CRM_ALLOW_INSECURE_LDAP, and that
+ * refusal is only assertable while the variable is absent elsewhere.
+ */
+const LDAP_ENV = {
+  CRM_ALLOW_INSECURE_LDAP: '1',
+  CRM_LDAP_BIND_PASSWORD: 'svc-pw-1',
+}
 
 const TEST_LDIF = `dn: ${PEOPLE}
 objectClass: organizationalUnit
@@ -98,6 +109,7 @@ async function waitFor(
   throw last instanceof Error ? last : new Error(String(last))
 }
 
+/** Run a docker-exec command, piping `input` to its stdin. */
 /** Run a docker-exec command, piping `input` to its stdin. */
 async function runLdapStream(
   container: string,
@@ -356,6 +368,29 @@ describe('P6 LDAP: directory login', () => {
     return starting
   }
 
+  /** ldapmodify as the directory admin (root of the test container). */
+  async function ldapModify(ldif: string): Promise<void> {
+    await runLdapStream(
+      (await ensureLdap()).container,
+      [
+        'ldapmodify',
+        '-x',
+        '-H',
+        'ldap://localhost',
+        '-D',
+        `cn=admin,${BASE}`,
+        '-w',
+        ADMIN_PASS,
+      ],
+      ldif,
+    )
+  }
+
+  /** LDIF moving bob into (or out of) the CRM admin group. */
+  function bobInAdmins(operation: 'add' | 'delete'): string {
+    return `dn: cn=crm-admins,${GROUPS}\nchangetype: modify\n${operation}: uniqueMember\nuniqueMember: uid=bob,${PEOPLE}\n`
+  }
+
   afterAll(async () => {
     await starting?.catch(() => undefined)
     if (ldap) {
@@ -369,6 +404,7 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
         // no owner bootstrap needed for a pure-ldap server, but the
@@ -399,6 +435,7 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
         const owner = await bootstrapOwner(server)
@@ -428,6 +465,7 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
         const res = await attemptLogin(server.port, 'dave', 'dave-pw-1')
@@ -457,6 +495,7 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
         const res = await attemptLogin(
@@ -483,7 +522,10 @@ describe('P6 LDAP: directory login', () => {
         `url = "${l.url}"`,
         'url = "ldap://127.0.0.1:1"',
       )
-      const server = await startServer(dbPath, { configBody: body })
+      const server = await startServer(dbPath, {
+        configBody: body,
+        env: LDAP_ENV,
+      })
       try {
         const owner = await bootstrapOwner(server)
         const c = await connect(server.port, owner.token)
@@ -512,6 +554,7 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
         const owner = await bootstrapOwner(server)
@@ -545,28 +588,21 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
+        // undo a promotion an earlier aborted run may have left behind:
+        // ldapmodify refuses to add a value that is already there (68),
+        // and every test here shares one directory container
+        await ldapModify(bobInAdmins('delete')).catch(() => undefined)
         const first = await attemptLogin(server.port, 'bob', 'bob-pw-1')
         expect(first.role).toBe('writer')
-        // promote bob into crm-admins
-        const mod = `dn: cn=crm-admins,${GROUPS}\nchangetype: modify\nadd: uniqueMember\nuniqueMember: uid=bob,${PEOPLE}\n`
-        await runLdapStream(
-          (await ensureLdap()).container,
-          [
-            'ldapmodify',
-            '-x',
-            '-H',
-            'ldap://localhost',
-            '-D',
-            `cn=admin,${BASE}`,
-            '-w',
-            ADMIN_PASS,
-          ],
-          mod,
-        )
+        await ldapModify(bobInAdmins('add'))
         const second = await attemptLogin(server.port, 'bob', 'bob-pw-1')
         expect(second.role).toBe('admin')
+        // put the directory back: a permanent promotion here leaks role
+        // state into whichever test runs next
+        await ldapModify(bobInAdmins('delete'))
       } finally {
         await server.close()
       }
@@ -581,6 +617,7 @@ describe('P6 LDAP: directory login', () => {
       const l = await ensureLdap()
       const server = await startServer(dbPath, {
         configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
       })
       try {
         // bootstrap first, while the users table is still empty
@@ -594,6 +631,131 @@ describe('P6 LDAP: directory login', () => {
         const denied = await attemptLogin(server.port, 'alice', 'alice-pw-1')
         expect(denied.code).toBe('AUTH')
         expect(denied.message).toMatch(/disabled/)
+
+        // the directory matches uids case-insensitively (caseIgnoreMatch),
+        // so a differently-cased login must land on the same CRM row — a
+        // second row would sidestep disabled_at entirely
+        const variant = await attemptLogin(server.port, 'ALICE', 'alice-pw-1')
+        expect(variant.code).toBe('AUTH')
+        expect(variant.message).toMatch(/disabled/)
+        expect(variant.token).toBeUndefined()
+
+        const c2 = await connect(server.port, owner.token)
+        const users = await c2.call<{ users: { username: string }[] }>(
+          'admin.user.list',
+          {},
+        )
+        c2.close()
+        expect(
+          users.users.filter((u) => u.username.toLowerCase() === 'alice'),
+        ).toHaveLength(1)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('a username matching several directory entries is refused', async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      // a filter that several test users satisfy — picking "the first
+      // entry" here would hand out whichever identity the directory
+      // happened to return
+      const body = ldapConfig(dbPath, l).replace(
+        'user_filter = "(uid={username})"',
+        'user_filter = "(mail=*@example.com)"',
+      )
+      const server = await startServer(dbPath, {
+        configBody: body,
+        env: LDAP_ENV,
+      })
+      try {
+        const res = await attemptLogin(server.port, 'alice', 'alice-pw-1')
+        expect(res.code).toBe('AUTH')
+        expect(res.message ?? '').toMatch(/ambiguous/i)
+        expect(res.token).toBeUndefined()
+      } finally {
+        await server.close()
+      }
+    } finally {
+      cleanup()
+    }
+  }, 90_000)
+
+  test('a directory that accepts but never answers fails in seconds', async () => {
+    const { dbPath, cleanup } = freshDb()
+    // a TCP sink: the connect succeeds, nothing ever answers. Without a
+    // request timeout the login promise never settles and the socket
+    // leaks with it.
+    const hung: import('node:net').Socket[] = []
+    const sink = createServer((sock) => {
+      hung.push(sock)
+      sock.on('data', () => undefined)
+    })
+    await new Promise<void>((resolveP) => sink.listen(0, '127.0.0.1', resolveP))
+    const sinkPort = (sink.address() as AddressInfo).port
+    try {
+      const l = await ensureLdap()
+      const body = ldapConfig(dbPath, l)
+        .replace(`url = "${l.url}"`, `url = "ldap://127.0.0.1:${sinkPort}"`)
+        .replace('starttls = false', 'starttls = false\ntimeout_ms = 1500')
+      const server = await startServer(dbPath, {
+        configBody: body,
+        env: LDAP_ENV,
+      })
+      try {
+        const started = Date.now()
+        const res = await attemptLogin(server.port, 'alice', 'alice-pw-1')
+        const elapsed = Date.now() - started
+        expect(res.code).toBe('AUTH')
+        expect(res.message ?? '').toMatch(/unreachable/i)
+        // the client's own deadline is 10s; the server must fail first
+        expect(elapsed).toBeLessThan(9000)
+      } finally {
+        await server.close()
+      }
+    } finally {
+      for (const s of hung) {
+        s.destroy()
+      }
+      sink.close()
+      cleanup()
+    }
+  }, 90_000)
+
+  test("a directory user's role follows groups, not set-role", async () => {
+    const { dbPath, cleanup } = freshDb()
+    try {
+      const l = await ensureLdap()
+      const server = await startServer(dbPath, {
+        configBody: ldapConfig(dbPath, l),
+        env: LDAP_ENV,
+      })
+      try {
+        const owner = await bootstrapOwner(server)
+        const jit = await attemptLogin(server.port, 'bob', 'bob-pw-1')
+        expect(jit.role).toBe('writer')
+        const c = await connect(server.port, owner.token)
+        let message = ''
+        let code = ''
+        try {
+          await c.call('admin.user.set-role', {
+            username: 'bob',
+            role: 'reader',
+          })
+        } catch (e) {
+          code = (e as { code?: string }).code ?? ''
+          message = (e as Error).message
+        }
+        c.close()
+        // silently reverting on the next login would be the worse failure
+        expect(code).toBe('INVALID')
+        expect(message).toMatch(/group/)
+        const again = await attemptLogin(server.port, 'bob', 'bob-pw-1')
+        expect(again.role).toBe('writer')
       } finally {
         await server.close()
       }

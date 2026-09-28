@@ -15,6 +15,15 @@ export interface CRMConfig {
      * membership maps to nothing. "none" (default) = deny everything.
      */
     default_role: string
+    /**
+     * Login attempts accepted per client IP per minute (0 = unlimited).
+     * Directory-backed logins never touch the CRM lockout counters (the
+     * directory owns that policy), so this is the only ceiling on how
+     * fast one client can push attempts at the directory.
+     */
+    login_rate_per_minute: number
+    /** Same, per (client IP, username) pair. 0 = unlimited. */
+    login_user_rate_per_minute: number
   }
   /**
    * P5 litestream backup. When `destination` is set (local path or
@@ -23,6 +32,19 @@ export interface CRMConfig {
    * `crm backup sync`.
    */
   backup: { destination: string }
+  /**
+   * Where the effective config came from. Resolved by `loadConfig`, never
+   * read from a config file. `trusted` means explicitly selected
+   * (--config / CRM_CONFIG) or the global ~/.crm/config.toml; a config
+   * found by walking up from the cwd is only semi-trusted, and
+   * `dropped_auth_authority` records whether it tried to define login
+   * authority anyway (see spec/enterprise.md, "Config discovery").
+   */
+  config_meta: {
+    dropped_auth_authority: boolean
+    path: string
+    trusted: boolean
+  }
   database: { path: string }
   defaults: { format: string }
   hooks: Record<string, string>
@@ -42,6 +64,24 @@ export interface CRMConfig {
     group_base_dn: string
     /** group DN (exact, case-insensitive) → CRM role */
     roles: Record<string, string>
+    /**
+     * PEM file holding the CA(s) that signed the directory certificate.
+     * Empty = the system trust store.
+     */
+    tls_ca_file: string
+    /**
+     * Skip certificate *verification* (self-signed lab directories).
+     * Never the default; `crm serve` logs a warning when it is set, and
+     * it is unrelated to `starttls`/`ldaps`, which stay mandatory.
+     */
+    tls_skip_verify: boolean
+    /**
+     * Per-operation (bind/search) deadline in ms. ldapts defaults to no
+     * timeout, which turns a black-holed directory into a hung login.
+     */
+    timeout_ms: number
+    /** TCP connect deadline in ms. */
+    connect_timeout_ms: number
   }
   mount: {
     default_path: string
@@ -91,6 +131,13 @@ function defaultConfig(): CRMConfig {
       lockout_minutes: 15,
       password_min_length: 12,
       default_role: 'none',
+      login_rate_per_minute: 60,
+      login_user_rate_per_minute: 15,
+    },
+    config_meta: {
+      dropped_auth_authority: false,
+      path: '',
+      trusted: true,
     },
     ldap: {
       enabled: false,
@@ -102,6 +149,10 @@ function defaultConfig(): CRMConfig {
       user_filter: '(uid={username})',
       group_base_dn: '',
       roles: {},
+      tls_ca_file: '',
+      tls_skip_verify: false,
+      timeout_ms: 5000,
+      connect_timeout_ms: 3000,
     },
     hooks: {},
     mount: {
@@ -140,6 +191,11 @@ function mergeConfig(
   override: Record<string, any>,
 ): CRMConfig {
   const result = { ...base }
+  // Booleans and numbers must be tested for presence, not truthiness: a
+  // config that says `starttls = false` or `login_rate_per_minute = 0`
+  // means something, and ignoring it silently is how a security knob
+  // quietly stops meaning what it says.
+  const given = (v: unknown): boolean => v !== undefined && v !== null
   if (override.database?.path) {
     result.database = { ...result.database, path: override.database.path }
   }
@@ -214,14 +270,41 @@ function mergeConfig(
       ...(override.auth.default_role
         ? { default_role: override.auth.default_role }
         : {}),
+      ...(given(override.auth.login_rate_per_minute)
+        ? {
+            login_rate_per_minute: override.auth.login_rate_per_minute,
+          }
+        : {}),
+      ...(given(override.auth.login_user_rate_per_minute)
+        ? {
+            login_user_rate_per_minute:
+              override.auth.login_user_rate_per_minute,
+          }
+        : {}),
     }
   }
   if (override.ldap) {
     result.ldap = {
       ...result.ldap,
-      ...(override.ldap.enabled ? { enabled: true } : {}),
+      ...(given(override.ldap.enabled)
+        ? { enabled: override.ldap.enabled === true }
+        : {}),
       ...(override.ldap.url ? { url: override.ldap.url } : {}),
-      ...(override.ldap.starttls ? { starttls: true } : {}),
+      ...(given(override.ldap.starttls)
+        ? { starttls: override.ldap.starttls === true }
+        : {}),
+      ...(given(override.ldap.tls_skip_verify)
+        ? { tls_skip_verify: override.ldap.tls_skip_verify === true }
+        : {}),
+      ...(override.ldap.tls_ca_file
+        ? { tls_ca_file: override.ldap.tls_ca_file }
+        : {}),
+      ...(given(override.ldap.timeout_ms)
+        ? { timeout_ms: override.ldap.timeout_ms }
+        : {}),
+      ...(given(override.ldap.connect_timeout_ms)
+        ? { connect_timeout_ms: override.ldap.connect_timeout_ms }
+        : {}),
       ...(override.ldap.base_dn ? { base_dn: override.ldap.base_dn } : {}),
       ...(override.ldap.bind_dn ? { bind_dn: override.ldap.bind_dn } : {}),
       ...(override.ldap.bind_password_env
@@ -291,6 +374,19 @@ lost_stage = "closed-lost"
   console.log('  Edit this file to customize.\n')
 }
 
+/**
+ * The one place that explains the config trust boundary, so `crm serve`
+ * (fatal) and every other command (warning) say the same thing.
+ */
+export function projectAuthConfigWarning(configPath: string): string {
+  return (
+    `ignoring [auth]/[ldap] from the project-discovered config ${configPath}. ` +
+    'They decide who may log in and with what role, and a config found by ' +
+    'walking up from the cwd is not trusted to define that. Move them into a ' +
+    'config selected with --config / $CRM_CONFIG, or into ~/.crm/config.toml.'
+  )
+}
+
 export function loadConfig(opts: {
   configPath?: string
   dbPath?: string
@@ -325,9 +421,21 @@ export function loadConfig(opts: {
   // marker. Explicitly selected configs and the global config are trusted.
   const isProjectConfig = !explicitPath && configPath !== globalPath
 
+  let droppedAuthAuthority = false
   try {
     const raw = readFileSync(configPath, 'utf-8')
     const parsed = parseTOML(raw)
+    // [auth] and [ldap] decide who is trusted to log in. Unlike [phone]
+    // or [pipeline], getting them wrong is not a preference mismatch but
+    // an authentication bypass, and there is no legitimate reason for
+    // them to live in a per-checkout config: the directory a server
+    // authenticates against is a deployment fact.
+    if (parsed && isProjectConfig && (parsed.auth || parsed.ldap)) {
+      droppedAuthAuthority = true
+      console.error(`Warning: ${projectAuthConfigWarning(configPath)}`)
+      parsed.auth = undefined
+      parsed.ldap = undefined
+    }
     if (parsed?.hooks && typeof parsed.hooks === 'object') {
       const hooksEnabled = parsed.hooks.enabled === true
       parsed.hooks.enabled = undefined
@@ -368,6 +476,12 @@ export function loadConfig(opts: {
     config.defaults.format = opts.format
   } else if (process.env.CRM_FORMAT) {
     config.defaults.format = process.env.CRM_FORMAT
+  }
+
+  config.config_meta = {
+    dropped_auth_authority: droppedAuthAuthority,
+    path: configPath,
+    trusted: !isProjectConfig,
   }
 
   return config

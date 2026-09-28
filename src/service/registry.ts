@@ -77,6 +77,25 @@ export interface MethodDef {
   write: boolean
 }
 
+/** Every role the product understands, weakest first. */
+export const VALID_ROLE_NAMES = [
+  'none',
+  'reader',
+  'writer',
+  'admin',
+  'owner',
+] as const
+
+/**
+ * Position on the role ladder; -1 for anything unrecognized. One ladder
+ * for RBAC checks and for `[ldap.roles]` resolution — a second table would
+ * drift from this one, and the copy in `[ldap]` resolution ranked unknown
+ * role names lowest instead of rejecting the config.
+ */
+export function roleRank(role: string): number {
+  return (VALID_ROLE_NAMES as readonly string[]).indexOf(role)
+}
+
 const ROLE_RANK: Record<MethodRole, number> = {
   reader: 1,
   writer: 2,

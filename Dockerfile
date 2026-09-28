@@ -30,6 +30,13 @@ COPY . .
 RUN bun run build
 
 ENV CRM_DB=/data/crm.db
+# Config: `crm serve` refuses [auth]/[ldap] from a crm.toml it discovers by
+# walking up from the cwd (that file can arrive with a clone), so give the
+# server an explicit one:
+#   docker run -e CRM_CONFIG=/data/crm.toml -v ./crm.toml:/data/crm.toml:ro \
+#              -e CRM_LDAP_BIND_PASSWORD=... -p 8443:8443 -v crm-data:/data crm
+# Unset, the global ~/.crm/config.toml inside the container is used (also
+# trusted), or defaults + the env vars above.
 VOLUME /data
 EXPOSE 8443
 
