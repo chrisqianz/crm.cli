@@ -1260,6 +1260,45 @@ crm serve            # CRM_SMTP_PASSWORD must be set in the environment
 
 ---
 
+### Web admin console
+
+`crm serve` can serve a small web console on a **separate plain-HTTP port**,
+so you manage the server from a browser instead of the CLI:
+
+```bash
+crm serve --admin-port 8586        # console on http://<host>:8586 (0 = auto)
+```
+
+Omit `--admin-port` and the console is off (the data port is RPC-only,
+unchanged). `--admin-host` picks the interface (default: the RPC host).
+
+Sign in with a normal CRM account (local or directory). The tabs:
+
+- **Users** — create local users (one-time password shown once), enable/
+  disable, see roles + status.
+- **Tokens** — create/revoke service tokens for automation.
+- **Audit** — recent hash-chained audit rows + "Verify chain".
+- **Config** — read-only view of serve/auth/LDAP/SMTP settings. Secrets are
+  never returned, only "is it set".
+- **Clients** — download `crm.toml` / `install.sh` with **this server's
+  address already embedded**, so a colleague installs once, runs
+  `crm login`, and never types `--server`/`--insecure` again.
+
+```bash
+# the generated client config:
+curl -O http://<host>:8586/download/crm.toml    # → ~/.crm/config.toml
+crm login                                        # once, then done
+```
+
+**Trust model:** the console reuses the exact RPC auth/RBAC/audit machinery
+(`POST /api/call` is a generic `{method, params}` endpoint with a bearer
+token — the browser is just another client, and every call writes the same
+audit rows). It speaks plain HTTP by design: treat it as an ops tool bound to
+a trusted interface, or put it behind a TLS-terminating proxy. The RPC data
+port stays TLS.
+
+---
+
 ### Import / Export
 
 #### `crm import <entity-type> <file>`

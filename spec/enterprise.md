@@ -409,6 +409,28 @@ Outbound only in v1. `crm email send <contact> --subject ... --body ...`:
 Follow-up (not v1): inbound — IMAP/Gmail inbox sync, auto-logging received
 mail as activities, contact/deal matching by address.
 
+## Web admin console (P8, as-built)
+
+`crm serve --admin-port <port>` (omit to disable) serves a single-file web
+console on a separate plain-HTTP port — the data port stays RPC-only TLS.
+
+- **One auth surface:** the console calls `handleAuth` / `handleCommand`
+  directly, so login (local + LDAP + bootstrap), role checks, and audit
+  recording are byte-for-byte the same as the RPC surface. `POST /api/call`
+  (`{"method", "params"}` + bearer token) is the generic JSON endpoint; the
+  HTML UI is just a client of it.
+- **Tabs:** Users (create with one-time password, enable/disable), Tokens
+  (create/revoke), Audit (recent rows + verify chain), Config (read-only;
+  secrets are never returned — only "is it set" flags), Clients (download).
+- **Client onboarding:** `GET /download/crm.toml` and `/download/install.sh`
+  embed the RPC address (`[remote] server = "host:port"`, `insecure` only
+  when the default self-signed material is in use), closing the
+  "ordinary users shouldn't juggle `--server`" gap. The token still comes
+  from `crm login` — a session artifact, never baked into the download.
+- **Transport:** plain HTTP by design (ops tool on a trusted interface,
+or behind a TLS proxy). HTTP status mapping: AUTH→401, FORBIDDEN→403,
+  INVALID→400, NOT_FOUND→404, else 500. Body cap 1 MiB.
+
 ## Out of scope for v1
 
 - Multi-tenancy (per-tenant rows in one DB)
@@ -438,6 +460,7 @@ drive the CLI client against it.
 | **P5** ✅ (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
 | **P6** (6–10 wk) | **LDAP directory integration** ✅ (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI); field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 | **P7** ✅ (0.5–1 wk) | Outbound email: dependency-free SMTP client, `[mail]` routing config + `CRM_SMTP_PASSWORD` env secret, `crm email send` with activity auto-logging, server-side send in remote mode | Mock-relay tests prove the message (from/to/cc/subject/body/auth) on the wire; activity + audit rows appear; reader refused / writer allowed; unconfigured and missing-secret fail cleanly (`test/email.test.ts` + `test/enterprise/email.test.ts`) |
+| **P8** ✅ (1–2 wk) | Web admin console on a separate HTTP port: login, Users/Tokens/Audit/Config/Clients tabs, `/api/call` JSON surface reusing RPC RBAC+audit, secret-free config view, `crm.toml`/`install.sh` client downloads with embedded server address | Console login + bearer identity; admin calls over HTTP create user/token; reader 403 on admin + config; secrets never in the response; downloads embed the RPC (not admin) port; audit rows written for console-originated writes (`test/enterprise/admin-console.test.ts`) |
 
 Sequencing note: P1 introduced `users`/`tokens` + local password login; P2 already
 enforces method-level RBAC (role rank vs method minimum) and writes an audit row

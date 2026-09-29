@@ -14,6 +14,7 @@ import {
   startReplicateDaemon,
 } from '../lib/litestream'
 import { generateBootstrapCode } from '../lib/secrets'
+import { startAdminServer } from '../server/admin'
 import { startServer } from '../server/serve'
 
 // `crm serve` — the enterprise server (spec/enterprise.md, P1).
@@ -28,12 +29,22 @@ export function registerServeCommand(program: Command): void {
     .option('--host <host>', 'Host/interface to bind')
     .option('--cert <path>', 'TLS certificate (PEM)')
     .option('--key <path>', 'TLS private key (PEM)')
+    .option(
+      '--admin-port <port>',
+      'Also serve the web console on this HTTP port (0 = auto; omit to disable)',
+    )
+    .option(
+      '--admin-host <host>',
+      'Interface for the web console (default: same as the RPC host)',
+    )
     .action(
       async (opts: {
         port?: string
         host?: string
         cert?: string
         key?: string
+        adminPort?: string
+        adminHost?: string
       }) => {
         const config = loadConfig({ configPath: gConfig, dbPath: gDb })
         // A project-discovered config that tried to define login
@@ -90,6 +101,7 @@ export function registerServeCommand(program: Command): void {
             )
           }
         }
+        let admin: Awaited<ReturnType<typeof startAdminServer>> | null = null
         try {
           const server = await startServer({
             db,
@@ -105,11 +117,38 @@ export function registerServeCommand(program: Command): void {
             console.log(
               `crm serve listening on ${host === '0.0.0.0' || host === '::' ? '0.0.0.0' : host}:${addr.port} (DB: ${config.database.path})`,
             )
+            if (opts.adminPort !== undefined) {
+              // The generated client config needs a client-reachable
+              // address, not the bind interface.
+              const rpcHost =
+                host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
+              // Default certs are self-signed → clients need cert-skip.
+              // Custom material is assumed trusted.
+              const rpcInsecure = !(
+                opts.cert ||
+                opts.key ||
+                config.serve.cert ||
+                config.serve.key
+              )
+              admin = await startAdminServer({
+                db,
+                config,
+                bootstrapCode,
+                host: opts.adminHost ?? host,
+                port: Number(opts.adminPort),
+                rpcHost,
+                rpcPort: addr.port,
+                rpcInsecure,
+              })
+            }
           }
           const shutdown = () => {
             console.log('shutting down…')
             replica?.close()
             server.close(() => process.exit(0))
+            if (admin) {
+              admin.server.close()
+            }
             setTimeout(() => process.exit(0), 3000).unref()
           }
           process.on('SIGINT', shutdown)

@@ -9,6 +9,8 @@ export const REPO = join(import.meta.dir, '..', '..')
 export const CRM = join(REPO, 'src', 'cli.ts')
 
 export interface TestServer {
+  /** Admin console HTTP port (null when --admin-port was not passed) */
+  adminPort: number | null
   close: () => Promise<void>
   /** Absolute path of the server-side database file */
   dbPath: string
@@ -24,6 +26,8 @@ export interface TestServer {
  * and `BOOTSTRAP-CODE=<code>` when the users table is empty.
  */
 export interface StartServerOptions {
+  /** Extra CLI args for `crm serve` (after --port/--db), e.g. admin flags. */
+  args?: string[]
   /** TOML written to a temp file and passed as CRM_CONFIG (trusted config). */
   configBody?: string
   /** Existing config file to pass as CRM_CONFIG (trusted config). */
@@ -65,7 +69,7 @@ export async function startServer(
   }
   const proc = spawn(
     'bun',
-    ['run', CRM, 'serve', '--port', '0', '--db', dbPath],
+    ['run', CRM, 'serve', '--port', '0', '--db', dbPath, ...(opts?.args ?? [])],
     {
       cwd: opts?.cwd ?? REPO,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -100,8 +104,32 @@ export async function startServer(
     )
   }
 
+  // The admin console (when enabled) prints ADMIN <port> right after
+  // READY; poll briefly so tests can drive it over plain HTTP.
+  const adminPort = await new Promise<number | null>((resolve) => {
+    if (!opts?.args?.some((a) => a.startsWith('--admin-port'))) {
+      resolve(null)
+      return
+    }
+    const timer = setTimeout(() => resolve(null), 10_000)
+    const tick = setInterval(() => {
+      const m = out.match(/ADMIN\s+(\d+)/)
+      if (m) {
+        clearInterval(tick)
+        clearTimeout(timer)
+        resolve(Number(m[1]))
+      }
+    }, 50)
+    proc.on('exit', () => {
+      clearInterval(tick)
+      clearTimeout(timer)
+      resolve(null)
+    })
+  })
+
   return {
     port,
+    adminPort,
     proc,
     dbPath,
     log: () => out + err,
