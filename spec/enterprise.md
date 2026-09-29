@@ -384,6 +384,31 @@ These are defects in today's code, fixed immediately on the fork:
    install-time or runtime network calls exist in `src/` at all (the
    ONNX model download described in the docs is not implemented).
 
+## Email (P7, as-built)
+
+Outbound only in v1. `crm email send <contact> --subject ... --body ...`:
+
+- Sends through the configured SMTP relay with a dependency-free client
+  (plain TCP, optional STARTTLS, implicit TLS on `secure = true`,
+  AUTH LOGIN, dot-stuffed DATA, 30s guard).
+- Recipient defaults to the contact's first email address; `--to` overrides,
+  `--cc` repeats, `--body-file <path|->` reads the body (stdin with `-`).
+- Every send auto-logs an `email` activity on the contact — and on the deal
+  when `--deal <ref>` is given — so the record stays the source of truth
+  for "what did we tell this customer".
+- Trust model: `[mail]` in the **trusted** config carries routing only
+  (`host`, `port`, `user`, `from`, `secure`); the relay password comes from
+  the **server process environment** `CRM_SMTP_PASSWORD` (same posture as
+  the LDAP bind password) and never touches the config file or the DB.
+- Remote mode: the send executes server-side — the client never sees the
+  relay address or password. `email.send` is `write: true` (auto-audited)
+  with `minRole: writer`.
+- Unconfigured relay / missing password fail cleanly before any network
+  round-trip.
+
+Follow-up (not v1): inbound — IMAP/Gmail inbox sync, auto-logging received
+mail as activities, contact/deal matching by address.
+
 ## Out of scope for v1
 
 - Multi-tenancy (per-tenant rows in one DB)
@@ -412,6 +437,7 @@ drive the CLI client against it.
 | **P4** ✅ (1–2 wk) | audit_log + hash chain, `crm audit list/verify/export` | Every mutation produces a row; `audit verify` detects a single-row tamper; audit covers all ~20 write sites (test per site) |
 | **P5** ✅ (2–3 wk) | litestream WAL backup → S3/NAS, prebuilt FUSE/NFS bridges in release, Windows client build, internal-mirror install doc | Restore test: kill server, restore from archive, `audit verify` passes; mounts work with zero local compilation on Linux + macOS |
 | **P6** (6–10 wk) | **LDAP directory integration** ✅ (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI); field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
+| **P7** ✅ (0.5–1 wk) | Outbound email: dependency-free SMTP client, `[mail]` routing config + `CRM_SMTP_PASSWORD` env secret, `crm email send` with activity auto-logging, server-side send in remote mode | Mock-relay tests prove the message (from/to/cc/subject/body/auth) on the wire; activity + audit rows appear; reader refused / writer allowed; unconfigured and missing-secret fail cleanly (`test/email.test.ts` + `test/enterprise/email.test.ts`) |
 
 Sequencing note: P1 introduced `users`/`tokens` + local password login; P2 already
 enforces method-level RBAC (role rank vs method minimum) and writes an audit row

@@ -14,6 +14,7 @@ import { registerCompletionCommand } from './commands/completion'
 import { registerContactCommands } from './commands/contact'
 import { registerDealCommands, registerPipelineCommand } from './commands/deal'
 import { registerDupesCommand } from './commands/dupes'
+import { registerEmailCommands } from './commands/email'
 import { registerFuseCommands } from './commands/fuse'
 import { registerImportExportCommands } from './commands/importexport'
 import { registerLoginCommands } from './commands/login'
@@ -53,6 +54,7 @@ registerSearchCommands(program)
 registerReportCommands(program)
 registerImportExportCommands(program)
 registerDupesCommand(program)
+registerEmailCommands(program)
 registerFuseCommands(program)
 registerServeCommand(program)
 registerLoginCommands(program)

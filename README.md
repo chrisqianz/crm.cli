@@ -1204,6 +1204,62 @@ starts — it is checked at boot alongside the rest of the `[ldap]` config.
 
 ---
 
+### Email (outbound SMTP)
+
+`crm email send` delivers an outbound email through the configured SMTP
+relay and **auto-logs an `email` activity** on the contact (and optionally
+the deal), so the CRM record stays the source of truth for "what did we
+tell this customer".
+
+The SMTP client is dependency-free (plain TCP, optional STARTTLS or
+implicit TLS, AUTH LOGIN). Outbound only in v1 — inbound (IMAP/Gmail
+inbox sync) is a follow-up.
+
+#### `crm email send <contact>`
+
+```bash
+crm email send jane --subject "Q3 proposal" --body "Hi Jane, ..."
+crm email send jane --to jane@other.com --cc boss@corp --subject "FYI" --body-file note.txt
+crm email send jane --subject "Close" --body "See you Friday" --deal "Acme Q3"
+```
+
+- Recipient defaults to the contact's **first email**; `--to` overrides.
+- `--cc <addr>` is repeatable. `--body-file <path>` reads the body from a
+  file (useful for long bodies; a `-` reads stdin).
+- `--deal <ref>` links the logged activity to a deal (resolves by id or
+  title, same as other commands).
+
+#### Server-side trust model
+
+Relay credentials **never live in the config file**. `[mail]` carries
+routing only; the password comes from the **server process environment**
+`CRM_SMTP_PASSWORD` — the same posture as the LDAP bind password:
+
+```toml
+# crm.toml (trusted config, server host only)
+[mail]
+host = "relay.corp.example"
+port = 587            # 465 + secure = true for implicit TLS
+user = "crm@corp.example"
+from = "crm@corp.example"
+secure = false         # true only for implicit-TLS ports
+```
+
+```bash
+# server host
+crm serve            # CRM_SMTP_PASSWORD must be set in the environment
+```
+
+- Local mode reads the same `[mail]` section from the local config and
+  `CRM_SMTP_PASSWORD` from the CLI process environment.
+- Remote mode always sends **server-side**: the client never sees the
+  relay address or password, and `email.send` is subject to normal RBAC
+  (writer+) and is auto-audited.
+- Unconfigured/missing password fail cleanly (`SMTP not configured` /
+  `SMTP password missing`) without a network round-trip.
+
+---
+
 ### Import / Export
 
 #### `crm import <entity-type> <file>`

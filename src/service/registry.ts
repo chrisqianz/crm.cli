@@ -41,6 +41,7 @@ import {
   pipelineSummary,
 } from './deal'
 import { findDupes } from './dupes'
+import { emailSend } from './email'
 import {
   exportAll,
   exportCompanies,
@@ -150,6 +151,8 @@ export const METHODS: Record<string, MethodDef> = {
   // ── activity ──
   'activity.log': { minRole: 'writer', write: true, fn: activityLog },
   'activity.list': { minRole: 'reader', write: false, fn: activityList },
+  // ── email (outbound SMTP + auto-logged activity) ──
+  'email.send': { minRole: 'writer', write: true, fn: emailSend },
   // ── audit (P4: hash chain; v1 role-level — every role can read) ──
   'audit.list': { minRole: 'reader', write: false, fn: auditList },
   'audit.verify': { minRole: 'reader', write: false, fn: auditVerify },

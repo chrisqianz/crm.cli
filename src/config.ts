@@ -83,6 +83,18 @@ export interface CRMConfig {
     /** TCP connect deadline in ms. */
     connect_timeout_ms: number
   }
+  /**
+   * Outbound SMTP for `crm email send`. The relay password is never stored
+   * in config — it comes from the server process env (CRM_SMTP_PASSWORD),
+   * matching the LDAP bind-password trust model.
+   */
+  mail: {
+    host: string
+    port: number
+    user: string
+    from: string
+    secure: boolean
+  }
   mount: {
     default_path: string
     readonly: boolean
@@ -125,6 +137,7 @@ function defaultConfig(): CRMConfig {
     defaults: { format: 'table' },
     phone: { display: 'international' },
     remote: { server: '', insecure: false },
+    mail: { host: '', port: 587, user: '', from: '', secure: false },
     serve: { port: 8443, host: '127.0.0.1', cert: '', key: '' },
     auth: {
       lockout_threshold: 5,
@@ -236,6 +249,16 @@ function mergeConfig(
       ...(override.remote.insecure
         ? { insecure: override.remote.insecure }
         : {}),
+    }
+  }
+  if (override.mail) {
+    result.mail = {
+      ...result.mail,
+      ...(override.mail.host ? { host: override.mail.host } : {}),
+      ...(override.mail.port ? { port: override.mail.port } : {}),
+      ...(override.mail.user ? { user: override.mail.user } : {}),
+      ...(override.mail.from ? { from: override.mail.from } : {}),
+      ...(override.mail.secure ? { secure: true } : {}),
     }
   }
   if (override.backup) {
