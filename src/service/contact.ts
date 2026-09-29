@@ -40,6 +40,7 @@ import {
 import { resolveCompany, resolveContact } from '../resolve'
 
 export interface ContactAddParams {
+  address?: string[]
   bluesky?: string
   company?: string[]
   email?: string[]
@@ -61,6 +62,7 @@ export async function contactAdd(
   opts.name = (opts.name ?? '').trim()
   opts.email = (opts.email ?? []).map((e) => e.trim())
   opts.phone = (opts.phone ?? []).map((ph) => ph.trim())
+  opts.address = (opts.address ?? []).map((a) => a.trim()).filter((a) => a)
   opts.company = (opts.company ?? []).map((c) => c.trim())
   opts.tag = (opts.tag ?? []).map((t) => t.trim())
   const cid = makeId('ct')
@@ -115,6 +117,7 @@ export async function contactAdd(
       name: opts.name,
       emails: opts.email,
       phones,
+      addresses: opts.address,
       companies,
       linkedin,
       x,
@@ -135,6 +138,7 @@ export async function contactAdd(
     name: opts.name,
     emails: JSON.stringify(opts.email),
     phones: JSON.stringify(phones),
+    addresses: JSON.stringify(opts.address ?? []),
     companies: JSON.stringify(companies),
     linkedin,
     x,
@@ -157,6 +161,7 @@ export async function contactAdd(
     name: opts.name,
     emails: opts.email,
     phones,
+    addresses: opts.address,
     companies,
     linkedin,
     x,
@@ -193,6 +198,42 @@ export async function contactList(
   let rows = (await db.select().from(schema.contacts)).map((c) =>
     contactToRow(c),
   )
+  // Opportunity column: the contact's open (non won/lost) deals, biggest
+  // value first; a second and later deal folds into "+N more".
+  {
+    const openStages = new Set(
+      config.pipeline.stages.filter(
+        (s) =>
+          s !== config.pipeline.won_stage && s !== config.pipeline.lost_stage,
+      ),
+    )
+    const openByContact = new Map<
+      string,
+      { title: string; stage: string; value: number | null }[]
+    >()
+    for (const d of await db.select().from(schema.deals)) {
+      if (!openStages.has(d.stage)) {
+        continue
+      }
+      for (const cid of safeJSON(d.contacts) as string[]) {
+        const list = openByContact.get(cid) ?? []
+        list.push({ title: d.title, stage: d.stage, value: d.value })
+        openByContact.set(cid, list)
+      }
+    }
+    for (const r of rows) {
+      const open = (openByContact.get(r.id as string) ?? []).sort(
+        (a, b) =>
+          (b.value ?? 0) - (a.value ?? 0) || a.title.localeCompare(b.title),
+      )
+      r.open_deal =
+        open.length === 0
+          ? null
+          : `${open[0].title} (${open[0].stage}, ${open[0].value ?? 0})${
+              open.length > 1 ? ` +${open.length - 1} more` : ''
+            }`
+    }
+  }
   if (tag) {
     rows = rows.filter((c) => (c.tags as string[] | undefined)?.includes(tag))
   }
@@ -241,6 +282,7 @@ export async function contactShow(
 }
 
 export interface ContactEditParams {
+  addAddress?: string[]
   addCompany?: string[]
   addEmail?: string[]
   addPhone?: string[]
@@ -248,6 +290,7 @@ export interface ContactEditParams {
   bluesky?: string
   linkedin?: string
   name?: string
+  rmAddress?: string[]
   rmCompany?: string[]
   rmEmail?: string[]
   rmPhone?: string[]
@@ -274,6 +317,10 @@ export async function contactEdit(
   opts.rmPhone = (opts.rmPhone ?? []).map((ph) => ph.trim())
   opts.addCompany = (opts.addCompany ?? []).map((c) => c.trim())
   opts.rmCompany = (opts.rmCompany ?? []).map((c) => c.trim())
+  opts.addAddress = (opts.addAddress ?? [])
+    .map((a) => a.trim())
+    .filter((a) => a)
+  opts.rmAddress = (opts.rmAddress ?? []).map((a) => a.trim()).filter((a) => a)
   opts.addTag = (opts.addTag ?? []).map((t) => t.trim())
   opts.rmTag = (opts.rmTag ?? []).map((t) => t.trim())
   const c = await resolveContact(db, ref.trim(), config)
@@ -284,6 +331,7 @@ export async function contactEdit(
   const actor = p.actor as string | undefined
   let emails: string[] = safeJSON(c.emails)
   let phones: string[] = safeJSON(c.phones)
+  let addresses: string[] = safeJSON(c.addresses)
   let companies: string[] = safeJSON(c.companies)
   let tags: string[] = safeJSON(c.tags)
   const custom: Record<string, unknown> = safeJSON(c.custom_fields)
@@ -325,6 +373,14 @@ export async function contactEdit(
     phones = norm
       ? phones.filter((v) => v !== norm)
       : phones.filter((v) => v !== ph)
+  }
+  for (const a of opts.addAddress ?? []) {
+    if (!addresses.includes(a)) {
+      addresses.push(a)
+    }
+  }
+  for (const a of opts.rmAddress ?? []) {
+    addresses = addresses.filter((v) => v !== a)
   }
   for (const co of opts.addCompany ?? []) {
     const coId = await getOrCreateCompanyId(db, co)
@@ -387,6 +443,7 @@ export async function contactEdit(
       name,
       emails,
       phones,
+      addresses,
       companies,
       linkedin,
       x,
@@ -407,6 +464,7 @@ export async function contactEdit(
       name,
       emails: JSON.stringify(emails),
       phones: JSON.stringify(phones),
+      addresses: JSON.stringify(addresses),
       companies: JSON.stringify(companies),
       linkedin,
       x,

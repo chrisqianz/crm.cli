@@ -306,6 +306,7 @@ export async function buildContactSearch(db: DB, c: Contact): Promise<string> {
     c.name,
     c.emails,
     c.phones,
+    c.addresses,
     companyNames.join(' '),
     c.linkedin,
     c.x,

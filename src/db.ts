@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   name TEXT NOT NULL,
   emails TEXT NOT NULL DEFAULT '[]',
   phones TEXT NOT NULL DEFAULT '[]',
+  addresses TEXT NOT NULL DEFAULT '[]',
   companies TEXT NOT NULL DEFAULT '[]',
   linkedin TEXT,
   x TEXT,
@@ -229,6 +230,8 @@ async function migrateSchema(
     // P4: audit hash chain
     ['audit_log', 'prev_hash', "prev_hash TEXT NOT NULL DEFAULT ''"],
     ['audit_log', 'row_hash', "row_hash TEXT NOT NULL DEFAULT ''"],
+    // CLI ergonomics: first-class addresses on contacts
+    ['contacts', 'addresses', "addresses TEXT NOT NULL DEFAULT '[]'"],
   ]
   const seen = new Set<string>()
   for (const [table] of migrations) {

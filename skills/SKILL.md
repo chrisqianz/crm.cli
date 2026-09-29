@@ -315,7 +315,7 @@ crm import deals deals.csv --skip-errors
 cat data.json | crm import contacts -        # import from stdin
 ```
 
-CSV headers: `name`, `email`/`emails`, `phone`/`phones`, `company`/`companies`, `tags`, `linkedin`, `x`, `bluesky`, `telegram`. Unrecognized columns become custom fields.
+CSV headers: `name`, `email`/`emails`, `phone`/`phones`, `address`/`addresses`, `company`/`companies`, `tags`, `linkedin`, `x`, `bluesky`, `telegram`. Unrecognized columns become custom fields.
 
 ### Export
 
@@ -481,3 +481,5 @@ Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-
 - **Refs** — `show`/`edit`/`rm`/`move` and `--contact`/`--company`/`--deal` accept id, name, email, phone, website, social handle, or deal title (case-insensitive, exact). Names match exactly only; a prefix of another name does NOT match.
 - **Ambiguous ref → exit 3** lists every candidate with its id; re-run with the id (or email) to pick one. Exit 3 always means "recoverable — read the printed candidates/version and retry".
 - **Positional name:** `crm contact add "Jane Doe" --email jane@acme.com` (the name/title can be the first argument instead of `--name`/`--title`).
+- **Addresses:** `crm contact add --address "..."` (repeatable) / `crm contact edit --add-address` / `--rm-address`; exposed as `addresses[]` in rows.
+- **`open_deal` column:** every `contact list` row carries `open_deal` — the contact's open (non won/lost) deal as `title (stage, value)`, biggest first, `+N more` when several. Use it to answer "who do I chase this week" without a join.

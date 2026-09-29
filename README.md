@@ -344,7 +344,7 @@ People you interact with.
 ```bash
 crm contact add --name "Jane Doe" --email jane@acme.com
 crm contact add "Jane Doe" --email jane@acme.com   # positional name works too
-crm contact add --name "Jane Doe" --email jane@acme.com --email jane.doe@gmail.com --phone "+1-212-555-1234" --phone "+44-20-7946-0958" --company Acme --company "Acme Ventures" --tag hot-lead --tag enterprise
+crm contact add --name "Jane Doe" --email jane@acme.com --email jane.doe@gmail.com --phone "+1-212-555-1234" --phone "+44-20-7946-0958" --company Acme --company "Acme Ventures" --address "Floor 12, 88 Xingfu Rd, Pudong" --tag hot-lead --tag enterprise
 crm contact add --name "Jane Doe" --email jane@acme.com --linkedin janedoe --x janedoe --set title=CTO --set source=conference --set notes="Met at SaaStr"
 crm contact add --name "Jane Doe" --linkedin https://linkedin.com/in/janedoe   # URL input also works — handle is extracted
 ```
@@ -354,6 +354,7 @@ crm contact add --name "Jane Doe" --linkedin https://linkedin.com/in/janedoe   #
 | `--name`     | yes (or positional) | Full name                                                            |
 | `--email`    | no       | Email address (repeatable — multiple allowed)                        |
 | `--phone`    | no       | Phone number (repeatable — multiple allowed)                         |
+| `--address`  | no       | Street/office address (repeatable — multiple allowed)                |
 | `--company`  | no       | Company name (repeatable — links to existing or creates stub)        |
 | `--tag`      | no       | Tag (repeatable — multiple allowed)                                  |
 | `--linkedin` | no       | LinkedIn handle or URL (stored as handle, e.g. `janedoe`)            |
@@ -400,6 +401,8 @@ crm contact list --limit 10 --offset 20
 | `--limit`   | Max results (default: no limit)                                          |
 | `--offset`  | Skip N results                                                           |
 
+The table view shows every column with at least one value — `id`, `name`, `emails`, `phones`, `addresses`, `companies`, `open_deal` (the contact's open opportunity: `title (stage, value)`, biggest deal first, `+N more` when several), socials, `tags`, `custom_fields`, timestamps. Addresses and the open deal are also part of `--format json` rows, and `--filter` works on them (`--filter "open_deal~=Q3"`).
+
 #### `crm contact show <ref>`
 
 ```bash
@@ -430,6 +433,8 @@ crm contact edit ct_01J8Z... --add-company "Acme Ventures" --rm-company "Old Cor
 | `--rm-email`    | Remove an email address                                |
 | `--add-phone`   | Add a phone number                                     |
 | `--rm-phone`    | Remove a phone number                                  |
+| `--add-address` | Add a street/office address (repeatable)               |
+| `--rm-address`  | Remove a street/office address (repeatable)            |
 | `--add-company` | Link to a company (creates stub if needed)             |
 | `--rm-company`  | Unlink from a company                                  |
 | `--linkedin`    | Set LinkedIn handle (accepts URL — extracts handle)    |
@@ -1152,7 +1157,7 @@ crm import companies companies.csv
 crm import deals deals.csv
 ```
 
-CSV files expect headers matching core field names (`name`, `email`, `phone`, `company`, `tags`). Any unrecognized column headers are imported as custom fields. Tags are comma-separated within the field.
+CSV files expect headers matching core field names (`name`, `email`, `phone`, `address`, `company`, `tags`). Any unrecognized column headers are imported as custom fields. Tags are comma-separated within the field.
 
 JSON files expect an array of objects with the same field names.
 

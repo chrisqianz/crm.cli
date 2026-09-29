@@ -33,6 +33,8 @@ const CONTACT_FIELDS = new Set([
   'emails',
   'phone',
   'phones',
+  'address',
+  'addresses',
   'company',
   'companies',
   'tags',
@@ -104,6 +106,9 @@ export async function importContacts(
           return n || ph
         })
         .filter((ph) => /^\+\d+$/.test(ph))
+      const addresses = splitField(rec.address || rec.addresses)
+        .map((a) => a.trim())
+        .filter(Boolean)
       const companies = splitField(rec.company || rec.companies).map((c) =>
         c.trim(),
       )
@@ -132,6 +137,14 @@ export async function importContacts(
           .update(schema.contacts)
           .set({
             name: name || existing.name,
+            ...(addresses.length > 0
+              ? {
+                  addresses: JSON.stringify([
+                    ...safeJSON(existing.addresses),
+                    ...addresses,
+                  ]),
+                }
+              : {}),
             custom_fields: JSON.stringify(custom),
             updated_at: now(),
             version: sql`${schema.contacts.version} + 1`,
@@ -176,6 +189,7 @@ export async function importContacts(
         name,
         emails: JSON.stringify(emails),
         phones: JSON.stringify(phones),
+        addresses: JSON.stringify(addresses),
         companies: JSON.stringify(companies),
         linkedin: social.linkedin,
         x: social.x,

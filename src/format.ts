@@ -201,6 +201,7 @@ function formatEntityDetail(entity: Record<string, unknown>): string {
 export function contactToRow(c: Contact): Record<string, unknown> {
   const emails: string[] = safeJSON(c.emails)
   const phones: string[] = safeJSON(c.phones)
+  const addresses: string[] = safeJSON(c.addresses)
   const companies: string[] = safeJSON(c.companies)
   const tags: string[] = safeJSON(c.tags)
   const custom: Record<string, unknown> = safeJSON(c.custom_fields)
@@ -209,6 +210,7 @@ export function contactToRow(c: Contact): Record<string, unknown> {
     name: c.name,
     emails,
     phones,
+    addresses,
     companies,
     linkedin: c.linkedin || null,
     x: c.x || null,

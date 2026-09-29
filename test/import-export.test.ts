@@ -24,6 +24,26 @@ John Smith,john@globex.com,,Globex,Engineer,inbound,`
     expect(contacts).toHaveLength(2)
   })
 
+  test('import address column as first-class addresses', () => {
+    const ctx = createTestContext()
+    const csv = `name,email,address
+Jane Doe,jane@acme.com,1 Main St
+John Smith,john@globex.com,2 Oak Ave`
+    const csvPath = join(ctx.dir, 'contacts.csv')
+    writeFileSync(csvPath, csv)
+
+    ctx.runOK('import', 'contacts', csvPath)
+
+    const contacts = ctx.runJSON<Record<string, unknown>[]>(
+      'contact',
+      'list',
+      '--format',
+      'json',
+    )
+    expect(contacts[0].addresses).toEqual(['1 Main St'])
+    expect(contacts[1].addresses).toEqual(['2 Oak Ave'])
+  })
+
   test('import JSON', () => {
     const ctx = createTestContext()
     const data = [
