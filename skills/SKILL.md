@@ -478,3 +478,6 @@ Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-
 - **All JSON files are self-contained** — no need to join across files
 - **Phone numbers** accept any format on input; stored as E.164 internally
 - **Social handles** accept full URLs; stored as clean handles
+- **Refs** — `show`/`edit`/`rm`/`move` and `--contact`/`--company`/`--deal` accept id, name, email, phone, website, social handle, or deal title (case-insensitive, exact). Names match exactly only; a prefix of another name does NOT match.
+- **Ambiguous ref → exit 3** lists every candidate with its id; re-run with the id (or email) to pick one. Exit 3 always means "recoverable — read the printed candidates/version and retry".
+- **Positional name:** `crm contact add "Jane Doe" --email jane@acme.com` (the name/title can be the first argument instead of `--name`/`--title`).

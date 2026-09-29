@@ -28,6 +28,7 @@ export function registerActivityCommands(program: Command) {
   const cmd = program.command('activity').description('Activity management')
   cmd
     .command('list')
+    .description('List activities (notes, calls, meetings, emails)')
     .option('--contact <ref>')
     .option('--company <ref>')
     .option('--deal <id>')

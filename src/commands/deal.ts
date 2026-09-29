@@ -1,7 +1,7 @@
 import type { Command } from 'commander'
 
 import { formatOutput } from '../format'
-import { collect, showEntity } from '../lib/helpers'
+import { collect, die, showEntity } from '../lib/helpers'
 import { dispatch, renderCtx } from '../remote/dispatch'
 
 export function registerDealCommands(program: Command) {
@@ -9,7 +9,9 @@ export function registerDealCommands(program: Command) {
 
   cmd
     .command('add')
-    .requiredOption('--title <title>', 'Deal title')
+    .description('Create a deal')
+    .argument('[title]', 'Deal title (same as --title)')
+    .option('--title <title>', 'Deal title')
     .option('--value <n>', 'Deal value')
     .option('--stage <stage>', 'Pipeline stage')
     .option('--contact <ref>', 'Contact', collect, [])
@@ -18,13 +20,21 @@ export function registerDealCommands(program: Command) {
     .option('--probability <n>', 'Win probability 0-100')
     .option('--tag <tag>', 'Tag', collect, [])
     .option('--set <kv>', 'Custom field', collect, [])
-    .action(async (opts) => {
-      const { id } = await dispatch<{ id: string }>('deal.add', opts)
+    .action(async (title, opts) => {
+      const finalTitle = opts.title ?? title
+      if (!finalTitle) {
+        die("Error: required option '--title <title>' not specified")
+      }
+      const { id } = await dispatch<{ id: string }>('deal.add', {
+        ...opts,
+        title: finalTitle,
+      })
       console.log(id)
     })
 
   cmd
     .command('list')
+    .description('List deals')
     .option('--stage <stage>')
     .option('--min-value <n>')
     .option('--max-value <n>')
@@ -47,6 +57,7 @@ export function registerDealCommands(program: Command) {
 
   cmd
     .command('show')
+    .description('Show one deal (ref: id or title)')
     .argument('<ref>')
     .action(async (ref) => {
       const { detail } = await dispatch<{ detail: Record<string, unknown> }>(
@@ -59,6 +70,7 @@ export function registerDealCommands(program: Command) {
 
   cmd
     .command('edit')
+    .description('Edit a deal (ref: id or title)')
     .argument('<ref>')
     .option('--title <title>')
     .option('--value <n>')
@@ -85,6 +97,7 @@ export function registerDealCommands(program: Command) {
 
   cmd
     .command('move')
+    .description('Move a deal to another pipeline stage (ref: id or title)')
     .argument('<ref>')
     .requiredOption('--stage <stage>', 'Target stage')
     .option('--note <text>', 'Note')
@@ -104,6 +117,7 @@ export function registerDealCommands(program: Command) {
 
   cmd
     .command('rm')
+    .description('Delete a deal (ref: id or title)')
     .argument('<ref>')
     .option('--force', 'Skip confirmation')
     .action(async (ref, opts) => {

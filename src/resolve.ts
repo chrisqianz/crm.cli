@@ -5,6 +5,7 @@ import type { DB } from './db'
 import type { Company, Contact, Deal } from './drizzle-schema'
 import * as schema from './drizzle-schema'
 import { safeJSON } from './format.ts'
+import { ServiceError } from './lib/errors'
 import {
   extractPhoneDigits,
   phoneMatchesByDigits,
@@ -12,6 +13,42 @@ import {
   tryNormalizePhone,
   tryNormalizeWebsite,
 } from './normalize.ts'
+
+/**
+ * Name-based ref lookup: case-insensitive EXACT match only.
+ * One match wins; several matches throw CONFLICT (CLI exit 3) listing the
+ * candidates, because silently picking one of two 张三 would be worse than
+ * asking. A prefix of another name is NOT a match.
+ */
+function nameCandidates<T extends { id: string }>(
+  kind: 'contact' | 'company' | 'deal',
+  rows: T[],
+  ref: string,
+  getName: (row: T) => string,
+  extra?: (row: T) => string,
+): T | null {
+  const q = ref.trim().toLowerCase()
+  if (!q) {
+    return null
+  }
+  const exact = rows.filter((r) => getName(r).trim().toLowerCase() === q)
+  if (exact.length === 1) {
+    return exact[0]
+  }
+  if (exact.length > 1) {
+    const plural = kind === 'deal' ? 'deals' : `${kind}s`
+    const lines = exact
+      .slice(0, 10)
+      .map(
+        (r) => `  ${r.id}  ${getName(r)}${extra ? ` ${extra(r)}`.trim() : ''}`,
+      )
+    throw new ServiceError(
+      'CONFLICT',
+      `Error: multiple ${plural} match "${ref}":\n${lines.join('\n')}\nUse the id (or email) to disambiguate`,
+    )
+  }
+  return null
+}
 
 export async function resolveContact(
   db: DB,
@@ -26,6 +63,24 @@ export async function resolveContact(
       .from(schema.contacts)
       .where(eq(schema.contacts.id, ref))
     return results[0] || null
+  }
+
+  // By name (case-insensitive exact; ambiguity → exit 3)
+  {
+    const all = await db.select().from(schema.contacts)
+    const hit = nameCandidates(
+      'contact',
+      all,
+      ref,
+      (c) => c.name,
+      (c) => {
+        const emails: string[] = safeJSON(c.emails)
+        return emails.length > 0 ? `<${emails[0]}>` : ''
+      },
+    )
+    if (hit) {
+      return hit
+    }
   }
 
   // By email
@@ -162,10 +217,11 @@ export async function resolveCompany(
     }
   }
 
-  // By name
-  for (const co of all) {
-    if (co.name === ref) {
-      return co
+  // By name (case-insensitive exact; ambiguity → exit 3)
+  {
+    const hit = nameCandidates('company', all, ref, (c) => c.name)
+    if (hit) {
+      return hit
     }
   }
 
@@ -183,6 +239,12 @@ export async function resolveDeal(
       .from(schema.deals)
       .where(eq(schema.deals.id, ref))
     return results[0] || null
+  }
+  // By title (case-insensitive exact; ambiguity → exit 3)
+  const all = await db.select().from(schema.deals)
+  const hit = nameCandidates('deal', all, ref, (d) => d.title)
+  if (hit) {
+    return hit
   }
   return null
 }
@@ -240,10 +302,11 @@ export async function resolveCompanyForLink(
     }
   }
 
-  // Try by name
-  for (const co of all) {
-    if (co.name === ref) {
-      return co
+  // By name (case-insensitive exact; ambiguity → exit 3)
+  {
+    const hit = nameCandidates('company', all, ref, (c) => c.name)
+    if (hit) {
+      return hit
     }
   }
 

@@ -11,6 +11,7 @@ export function registerImportExportCommands(program: Command) {
 
   imp
     .command('contacts')
+    .description('Import contacts from CSV or JSON')
     .argument('<file>')
     .option('--dry-run')
     .option('--skip-errors')
@@ -38,6 +39,7 @@ export function registerImportExportCommands(program: Command) {
 
   imp
     .command('companies')
+    .description('Import companies from CSV or JSON')
     .argument('<file>')
     .option('--dry-run')
     .option('--skip-errors')
@@ -56,6 +58,7 @@ export function registerImportExportCommands(program: Command) {
 
   imp
     .command('deals')
+    .description('Import deals from CSV or JSON')
     .argument('<file>')
     .option('--dry-run')
     .option('--skip-errors')
@@ -73,47 +76,62 @@ export function registerImportExportCommands(program: Command) {
     })
 
   const exp = program.command('export').description('Export data')
-  exp.command('contacts').action(async () => {
-    const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
-      'export.contacts',
-      {},
-    )
-    const { config, fmt } = renderCtx()
-    console.log(formatOutput(rows, fmt, config))
-  })
-  exp.command('companies').action(async () => {
-    const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
-      'export.companies',
-      {},
-    )
-    const { config, fmt } = renderCtx()
-    console.log(formatOutput(rows, fmt, config))
-  })
-  exp.command('deals').action(async () => {
-    const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
-      'export.deals',
-      {},
-    )
-    const { config, fmt } = renderCtx()
-    console.log(formatOutput(rows, fmt, config))
-  })
-  exp.command('all').action(async () => {
-    const { data } = (await dispatch('export.all', {})) as {
-      data: Record<string, unknown[]>
-    }
-    const { config, fmt } = renderCtx()
-    if (fmt === 'json') {
-      console.log(JSON.stringify(data, null, 2))
-    } else {
-      console.log(
-        formatOutput(
-          Object.entries(data).map(([k, v]) => ({ type: k, count: v.length })),
-          fmt,
-          config,
-        ),
+  exp
+    .command('contacts')
+    .description('Export contacts as CSV/JSON')
+    .action(async () => {
+      const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
+        'export.contacts',
+        {},
       )
-    }
-  })
+      const { config, fmt } = renderCtx()
+      console.log(formatOutput(rows, fmt, config))
+    })
+  exp
+    .command('companies')
+    .description('Export companies as CSV/JSON')
+    .action(async () => {
+      const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
+        'export.companies',
+        {},
+      )
+      const { config, fmt } = renderCtx()
+      console.log(formatOutput(rows, fmt, config))
+    })
+  exp
+    .command('deals')
+    .description('Export deals as CSV/JSON')
+    .action(async () => {
+      const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
+        'export.deals',
+        {},
+      )
+      const { config, fmt } = renderCtx()
+      console.log(formatOutput(rows, fmt, config))
+    })
+  exp
+    .command('all')
+    .description('Export every entity as CSV/JSON')
+    .action(async () => {
+      const { data } = (await dispatch('export.all', {})) as {
+        data: Record<string, unknown[]>
+      }
+      const { config, fmt } = renderCtx()
+      if (fmt === 'json') {
+        console.log(JSON.stringify(data, null, 2))
+      } else {
+        console.log(
+          formatOutput(
+            Object.entries(data).map(([k, v]) => ({
+              type: k,
+              count: v.length,
+            })),
+            fmt,
+            config,
+          ),
+        )
+      }
+    })
 }
 
 function readRecords(file: string): Record<string, string>[] {

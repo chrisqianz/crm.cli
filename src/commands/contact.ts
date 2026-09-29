@@ -1,7 +1,7 @@
 import type { Command } from 'commander'
 
 import { formatOutput } from '../format'
-import { collect, showEntity } from '../lib/helpers'
+import { collect, die, showEntity } from '../lib/helpers'
 import { dispatch, renderCtx } from '../remote/dispatch'
 
 export function registerContactCommands(program: Command) {
@@ -9,7 +9,9 @@ export function registerContactCommands(program: Command) {
 
   cmd
     .command('add')
-    .requiredOption('--name <name>', 'Contact name')
+    .description('Create a contact')
+    .argument('[name]', 'Contact name (same as --name)')
+    .option('--name <name>', 'Contact name')
     .option('--email <email>', 'Email', collect, [])
     .option('--phone <phone>', 'Phone', collect, [])
     .option('--company <company>', 'Company', collect, [])
@@ -19,13 +21,21 @@ export function registerContactCommands(program: Command) {
     .option('--bluesky <h>', 'Bluesky')
     .option('--telegram <h>', 'Telegram')
     .option('--set <kv>', 'Custom field', collect, [])
-    .action(async (opts) => {
-      const { id } = await dispatch<{ id: string }>('contact.add', opts)
+    .action(async (name, opts) => {
+      const finalName = opts.name ?? name
+      if (!finalName) {
+        die("Error: required option '--name <name>' not specified")
+      }
+      const { id } = await dispatch<{ id: string }>('contact.add', {
+        ...opts,
+        name: finalName,
+      })
       console.log(id)
     })
 
   cmd
     .command('list')
+    .description('List contacts')
     .option('--tag <tag>')
     .option('--company <company>')
     .option('--sort <field>')
@@ -44,6 +54,7 @@ export function registerContactCommands(program: Command) {
 
   cmd
     .command('show')
+    .description('Show one contact (ref: id, name, email, phone, social)')
     .argument('<ref>')
     .action(async (ref) => {
       const { detail } = await dispatch<{ detail: Record<string, unknown> }>(
@@ -56,6 +67,7 @@ export function registerContactCommands(program: Command) {
 
   cmd
     .command('edit')
+    .description('Edit a contact (ref: id, name, email, phone, social)')
     .argument('<ref>')
     .option('--name <name>')
     .option('--add-email <e>', '', collect, [])
@@ -86,6 +98,7 @@ export function registerContactCommands(program: Command) {
 
   cmd
     .command('rm')
+    .description('Delete a contact (ref: id, name, email, phone, social)')
     .argument('<ref>')
     .option('--force', 'Skip confirmation')
     .action(async (ref, opts) => {
@@ -94,6 +107,7 @@ export function registerContactCommands(program: Command) {
 
   cmd
     .command('merge')
+    .description('Merge two contacts (first keeps its id, second is absorbed)')
     .argument('<id1>')
     .argument('<id2>')
     .action(async (id1, id2) => {

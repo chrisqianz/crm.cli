@@ -73,15 +73,21 @@ export function registerSearchCommands(program: Command) {
     })
 
   const idx = program.command('index').description('Search index management')
-  idx.command('status').action(async () => {
-    const { lines } = await dispatch<{ lines: string[] }>('index.status', {})
-    for (const line of lines) {
-      console.log(line)
-    }
-  })
+  idx
+    .command('status')
+    .description('Show search index status')
+    .action(async () => {
+      const { lines } = await dispatch<{ lines: string[] }>('index.status', {})
+      for (const line of lines) {
+        console.log(line)
+      }
+    })
 
-  idx.command('rebuild').action(async () => {
-    await dispatch('index.rebuild', {})
-    console.log('Index rebuilt')
-  })
+  idx
+    .command('rebuild')
+    .description('Rebuild the FTS and vector indexes')
+    .action(async () => {
+      await dispatch('index.rebuild', {})
+      console.log('Index rebuilt')
+    })
 }

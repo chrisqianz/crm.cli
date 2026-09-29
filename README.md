@@ -300,9 +300,38 @@ default_role = "none"            # role for a directory user in no mapped group
 | ---- | ---------- | -------------------------------------------------------------- |
 | `0`  | Success    | Command completed                                              |
 | `1`  | Error      | Bad input, not found, hook rejection, auth failure             |
-| `3`  | Conflict   | Stale optimistic-locking `--version`, duplicate email/website, or any other write rejected because the data changed underneath you |
+| `3`  | Conflict   | Stale optimistic-locking `--version`, ambiguous name ref (candidates listed), duplicate email/website, or any other write rejected because the data changed underneath you |
 
-Conflict errors are **recoverable**: the message tells you the current version, re-read the entity (`crm contact show <id>`) and retry with the new `--version`.
+Conflict errors are **recoverable**: the message tells you the current version, re-read the entity (`crm contact show <id>`) and retry with the new `--version`. An ambiguous name ref is recovered the same way: pick the right id from the printed list.
+
+### Reference Resolution
+
+`show`, `edit`, `rm`, `move`, and `--contact` / `--company` / `--deal` links all accept any **ref**:
+
+| Entity  | Accepted refs                                       |
+| ------- | --------------------------------------------------- |
+| contact | id, name, email, phone, social handle or URL        |
+| company | id, name, website, phone                            |
+| deal    | id, title                                           |
+
+Names and titles match **case-insensitively, exact only** — a prefix of another name does not match. When two records share a name the command exits **3** and lists the candidates; disambiguate with the id or email.
+
+`add` also accepts the name/title as a positional argument:
+
+```bash
+crm contact add "Jane Doe" --email jane@acme.com
+crm deal add "Q3 renewal" --value 12000
+```
+
+### Shell Completion
+
+```bash
+crm completion bash   # eval "$(crm completion bash)"
+crm completion zsh    # put the output on $fpath
+crm completion fish   # crm completion fish | source
+```
+
+Typing an option on a command group (`crm contact --email x`) also prints a hint pointing at the subcommand that owns the flag.
 
 ---
 
@@ -314,6 +343,7 @@ People you interact with.
 
 ```bash
 crm contact add --name "Jane Doe" --email jane@acme.com
+crm contact add "Jane Doe" --email jane@acme.com   # positional name works too
 crm contact add --name "Jane Doe" --email jane@acme.com --email jane.doe@gmail.com --phone "+1-212-555-1234" --phone "+44-20-7946-0958" --company Acme --company "Acme Ventures" --tag hot-lead --tag enterprise
 crm contact add --name "Jane Doe" --email jane@acme.com --linkedin janedoe --x janedoe --set title=CTO --set source=conference --set notes="Met at SaaStr"
 crm contact add --name "Jane Doe" --linkedin https://linkedin.com/in/janedoe   # URL input also works — handle is extracted
@@ -321,7 +351,7 @@ crm contact add --name "Jane Doe" --linkedin https://linkedin.com/in/janedoe   #
 
 | Flag         | Required | Description                                                          |
 | ------------ | -------- | -------------------------------------------------------------------- |
-| `--name`     | yes      | Full name                                                            |
+| `--name`     | yes (or positional) | Full name                                                            |
 | `--email`    | no       | Email address (repeatable — multiple allowed)                        |
 | `--phone`    | no       | Phone number (repeatable — multiple allowed)                         |
 | `--company`  | no       | Company name (repeatable — links to existing or creates stub)        |
@@ -370,7 +400,7 @@ crm contact list --limit 10 --offset 20
 | `--limit`   | Max results (default: no limit)                                          |
 | `--offset`  | Skip N results                                                           |
 
-#### `crm contact show <id-or-email-or-phone-or-handle>`
+#### `crm contact show <ref>`
 
 ```bash
 crm contact show ct_01J8Z...
@@ -382,7 +412,7 @@ crm contact show linkedin.com/in/janedoe          # URL also works — extracts 
 
 Accepts ID, any email, any phone number, or any social handle (LinkedIn, X, Bluesky, Telegram). URLs are also accepted — the handle is extracted before lookup. Shows full contact details including linked companies, deals, activity history, tags, and custom fields.
 
-#### `crm contact edit <id-or-email-or-phone-or-handle>`
+#### `crm contact edit <ref>`
 
 ```bash
 crm contact edit jane@acme.com --name "Jane Smith"          # by email
@@ -412,7 +442,7 @@ crm contact edit ct_01J8Z... --add-company "Acme Ventures" --rm-company "Old Cor
 | `--add-tag`     | Add tag                                                |
 | `--rm-tag`      | Remove tag                                             |
 
-#### `crm contact rm <id-or-email-or-phone-or-handle>`
+#### `crm contact rm <ref>`
 
 ```bash
 crm contact rm jane@acme.com                # by email
@@ -471,7 +501,7 @@ crm company list --tag enterprise --sort name
 | `--limit`   | Max results                              |
 | `--offset`  | Skip N results                           |
 
-#### `crm company show <id-or-website-or-phone>`
+#### `crm company show <ref>`
 
 ```bash
 crm company show acme.com                  # by website
@@ -481,7 +511,7 @@ crm company show "+1-212-555-1234"         # by phone
 
 Accepts ID, any stored website, or any phone number. Shows company details plus all linked contacts and deals.
 
-#### `crm company edit <id-or-website-or-phone>`
+#### `crm company edit <ref>`
 
 ```bash
 crm company edit acme.com --name "Acme Inc" --set industry=Fintech     # by website
@@ -503,7 +533,7 @@ crm company edit acme.com --rm-website old-acme.com --rm-phone "+1-415-555-0000"
 | `--rm-tag`      | Remove tag                   |
 | `--version <n>` | Optimistic locking: require the company to still be at version `n`. A stale version exits `3`. |
 
-#### `crm company rm <id-or-website-or-phone>`
+#### `crm company rm <ref>`
 
 ```bash
 crm company rm acme.com                    # by website
@@ -533,6 +563,7 @@ Pipeline tracking for opportunities.
 
 ```bash
 crm deal add --title "Acme Enterprise" --value 50000
+crm deal add "Acme Enterprise" --value 50000   # positional title works too
 crm deal add --title "Acme Enterprise" --value 50000 --stage qualified --contact jane@acme.com --company acme.com --expected-close 2026-06-01 --probability 60 --tag q2
 ```
 
@@ -573,11 +604,11 @@ crm deal list --min-value 10000 --max-value 100000
 | `--limit`     | Max results                                                              |
 | `--offset`    | Skip first N results                                                     |
 
-#### `crm deal show <id>`
+#### `crm deal show <ref>`
 
 Shows full deal details including stage history (timestamps of every stage transition).
 
-#### `crm deal edit <id>`
+#### `crm deal edit <ref>`
 
 Same pattern as other entities. `--stage` is NOT used here — use `crm deal move` for stage changes (so transitions are tracked properly).
 
@@ -596,7 +627,7 @@ Same pattern as other entities. `--stage` is NOT used here — use `crm deal mov
 | `--rm-tag`         | Remove tag                                             |
 | `--version <n>`    | Optimistic locking: require the deal to still be at version `n`. A stale version exits `3`. |
 
-#### `crm deal move <id> --stage <stage>`
+#### `crm deal move <ref> --stage <stage>`
 
 ```bash
 crm deal move dl_01J8Z... --stage negotiation
@@ -610,7 +641,7 @@ Moving a deal to its current stage is rejected with an error.
 
 `--version <n>` enables optimistic locking: the move is only applied if the deal is still at version `n`. A stale version exits `3` (see [Exit Codes](#exit-codes)).
 
-#### `crm deal rm <id>`
+#### `crm deal rm <ref>`
 
 Prompts for confirmation unless `--force` is passed.
 

@@ -10,6 +10,7 @@ import { registerAdminCommands } from './commands/admin'
 import { registerAuditCommands } from './commands/audit'
 import { registerBackupCommands } from './commands/backup'
 import { registerCompanyCommands } from './commands/company'
+import { registerCompletionCommand } from './commands/completion'
 import { registerContactCommands } from './commands/contact'
 import { registerDealCommands, registerPipelineCommand } from './commands/deal'
 import { registerDupesCommand } from './commands/dupes'
@@ -22,6 +23,7 @@ import { registerServeCommand } from './commands/serve'
 import { registerTagCommands } from './commands/tag'
 import { startDaemon } from './fuse-daemon'
 import { cleanArgv } from './lib/helpers'
+import { commandsWithFlag } from './lib/suggest'
 
 // Injected at build time via --define; falls back to package.json for dev/test
 declare const __PKG_VERSION__: string | undefined
@@ -55,6 +57,7 @@ registerServeCommand(program)
 registerLoginCommands(program)
 registerAdminCommands(program)
 registerBackupCommands(program)
+registerCompletionCommand(program)
 
 // Hidden subcommand: runs the FUSE daemon in-process (used by `crm mount`)
 if (cleanArgv[0] === '__daemon') {
@@ -70,10 +73,32 @@ if (cleanArgv[0] === '__daemon') {
     if (err.exitCode !== undefined && err.exitCode === 0) {
       process.exit(0)
     }
+    const hint = unknownOptionHint(program, err.message ?? '')
+    if (hint) {
+      console.error(hint)
+    }
     if (err.exitCode !== undefined) {
       process.exit(err.exitCode)
     }
     console.error(err.message || e)
     process.exit(1)
   }
+}
+
+/**
+ * When an option is typed on a command group (`crm contact --email x`),
+ * commander only says "unknown option". Point at the subcommand that owns
+ * the flag.
+ */
+function unknownOptionHint(program: Command, message: string): string | null {
+  const m = /^error: unknown option '(-{1,2}[A-Za-z0-9-]+)'$/.exec(message)
+  if (!m) {
+    return null
+  }
+  const owners = commandsWithFlag(program, m[1]).slice(0, 3)
+  if (owners.length === 0) {
+    return null
+  }
+  const list = owners.map((o) => `  crm ${o} ${m[1]}...`).join('\n')
+  return `\nhint: '${m[1]}' is an option of:\n${list}`
 }

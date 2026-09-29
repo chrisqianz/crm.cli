@@ -1,7 +1,7 @@
 import type { Command } from 'commander'
 
 import { formatOutput } from '../format'
-import { collect, showEntity } from '../lib/helpers'
+import { collect, die, showEntity } from '../lib/helpers'
 import { dispatch, renderCtx } from '../remote/dispatch'
 
 export function registerCompanyCommands(program: Command) {
@@ -9,18 +9,28 @@ export function registerCompanyCommands(program: Command) {
 
   cmd
     .command('add')
-    .requiredOption('--name <name>', 'Company name')
+    .description('Create a company')
+    .argument('[name]', 'Company name (same as --name)')
+    .option('--name <name>', 'Company name')
     .option('--website <url>', 'Website', collect, [])
     .option('--phone <phone>', 'Phone', collect, [])
     .option('--tag <tag>', 'Tag', collect, [])
     .option('--set <kv>', 'Custom field', collect, [])
-    .action(async (opts) => {
-      const { id } = await dispatch<{ id: string }>('company.add', opts)
+    .action(async (name, opts) => {
+      const finalName = opts.name ?? name
+      if (!finalName) {
+        die("Error: required option '--name <name>' not specified")
+      }
+      const { id } = await dispatch<{ id: string }>('company.add', {
+        ...opts,
+        name: finalName,
+      })
       console.log(id)
     })
 
   cmd
     .command('list')
+    .description('List companies')
     .option('--tag <tag>')
     .option('--sort <field>')
     .option('--reverse', 'Reverse sort order')
@@ -38,6 +48,7 @@ export function registerCompanyCommands(program: Command) {
 
   cmd
     .command('show')
+    .description('Show one company (ref: id, name, website, phone)')
     .argument('<ref>')
     .action(async (ref) => {
       const { detail } = await dispatch<{ detail: Record<string, unknown> }>(
@@ -50,6 +61,7 @@ export function registerCompanyCommands(program: Command) {
 
   cmd
     .command('edit')
+    .description('Edit a company (ref: id, name, website, phone)')
     .argument('<ref>')
     .option('--name <name>')
     .option('--add-website <url>', '', collect, [])
@@ -74,6 +86,7 @@ export function registerCompanyCommands(program: Command) {
 
   cmd
     .command('rm')
+    .description('Delete a company (ref: id, name, website, phone)')
     .argument('<ref>')
     .option('--force', 'Skip confirmation')
     .action(async (ref, opts) => {
@@ -82,6 +95,7 @@ export function registerCompanyCommands(program: Command) {
 
   cmd
     .command('merge')
+    .description('Merge two companies (first keeps its id, second is absorbed)')
     .argument('<id1>')
     .argument('<id2>')
     .action(async (id1, id2) => {
