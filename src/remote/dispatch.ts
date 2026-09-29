@@ -1,10 +1,10 @@
 /**
- * Thin-client dispatch: routes a command either to the local service layer
- * (direct db access) or to a remote `crm serve` (RPC over TLS).
- *
  * Remote mode is enabled when any of:
  *  1. CRM_SERVER + CRM_TOKEN env are both set (agent/service pattern)
- *  2. --remote flag or [remote] server in config (human/team pattern)
+ *  2. --remote flag or [remote] server in config (explicit opt-in)
+ *  3. a saved session from `crm login` (mode contract: logged-in clients
+ *     target their server by default; local is an explicit opt-out via
+ *     --local, CRM_LOCAL=1, or an explicit --db)
  *
  * In remote mode no local database is ever opened: the CLI renders the
  * server's response locally.
@@ -15,7 +15,15 @@ import type { DB } from '../db'
 import { openDB } from '../db'
 import { auditMeta, auditSnapshot, osUserName, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
-import { die, gConfig, gDb, gFmt, gInsecure, gRemote } from '../lib/helpers'
+import {
+  die,
+  gConfig,
+  gDb,
+  gFmt,
+  gInsecure,
+  gLocal,
+  gRemote,
+} from '../lib/helpers'
 import { RpcClient, RpcError } from '../lib/rpc'
 import { loadSession } from '../lib/session'
 import { METHODS, type MethodDef } from '../service/registry'
@@ -52,7 +60,27 @@ export function remoteEndpoint(): RemoteEndpoint | null {
     }
   }
 
-  // 3. Local mode.
+  // 3. Mode contract: a saved session implies its server. Local mode is
+  //    an explicit opt-out: --local, CRM_LOCAL=1, or an explicit --db.
+  const forcedLocal =
+    gLocal || process.env.CRM_LOCAL === '1' || process.env.CRM_LOCAL === 'true'
+  if (forcedLocal || gDb) {
+    return null
+  }
+  const sess = loadSession()
+  if (sess?.server && sess.token) {
+    if (envServer && envServer !== sess.server) {
+      die(
+        `Error: CRM_SERVER (${envServer}) does not match the logged-in server (${sess.server}) — log in to ${envServer}, unset CRM_SERVER, or use --local`,
+      )
+    }
+    return {
+      server: sess.server,
+      insecure: envInsecure || sess.insecure === true,
+    }
+  }
+
+  // 4. Local mode.
   return null
 }
 
@@ -124,6 +152,18 @@ export async function dispatch<
   // P4: local mode writes to the same audit hash chain (source=cli-local,
   // actor=OS user) with before/after snapshots where the target entity
   // is known.
+  const sess = loadSession()
+  if (
+    sess?.server &&
+    (gLocal ||
+      gDb ||
+      process.env.CRM_LOCAL === '1' ||
+      process.env.CRM_LOCAL === 'true')
+  ) {
+    console.error(
+      `note: local mode — you are logged in to ${sess.server} as ${sess.username || '(unknown)'}; use --remote (or drop --local) to target the server`,
+    )
+  }
   const before = def.write
     ? await auditSnapshot(db, config, method, params, null)
     : null

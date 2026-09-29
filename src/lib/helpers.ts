@@ -17,7 +17,8 @@ export let gDb: string | undefined,
   gConfig: string | undefined,
   gFmt: string | undefined,
   gRemote = false,
-  gInsecure = false
+  gInsecure = false,
+  gLocal = false
 export const cleanArgv: string[] = []
 let _argIdx = 0
 while (_argIdx < rawArgv.length) {
@@ -35,6 +36,8 @@ while (_argIdx < rawArgv.length) {
     gRemote = true
   } else if (arg === '--insecure') {
     gInsecure = true
+  } else if (arg === '--local') {
+    gLocal = true
   } else if (arg !== '--no-color') {
     cleanArgv.push(arg)
   }

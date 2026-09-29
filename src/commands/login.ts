@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 
-import { die } from '../lib/helpers'
+import { die, gInsecure } from '../lib/helpers'
 import { promptLine, promptSecret } from '../lib/prompt'
 import { RpcClient } from '../lib/rpc'
 import {
@@ -50,8 +50,9 @@ export function registerLoginCommands(program: Command): void {
           loadSession()?.username ??
           (await promptLine('Username: '))
         const password = opts.password ?? (await promptSecret('Password: '))
+        const insecure = !!opts.insecure || gInsecure
         const client = await RpcClient.connect(port, host, {
-          insecure: !!opts.insecure,
+          insecure,
         }).catch((e: Error) =>
           die(`cannot connect to ${host}:${port}: ${e.message}`),
         )
@@ -64,6 +65,7 @@ export function registerLoginCommands(program: Command): void {
             server: `${host}:${port}`,
             username: res.user.username,
             token: res.token,
+            insecure,
           })
           console.log(
             `Logged in as ${res.user.username} (${res.user.role}) → ${host}:${port}`,
@@ -95,7 +97,11 @@ export function registerLoginCommands(program: Command): void {
         die('No server configured.')
       }
       const client = await RpcClient.connect(port, host, {
-        insecure: !!opts.insecure || process.env.CRM_INSECURE === '1',
+        insecure:
+          !!opts.insecure ||
+          gInsecure ||
+          session?.insecure === true ||
+          process.env.CRM_INSECURE === '1',
       }).catch((e: Error) =>
         die(`cannot connect to ${host}:${port}: ${e.message}`),
       )

@@ -1,6 +1,6 @@
 import type { Command } from 'commander'
 
-import { die } from '../lib/helpers'
+import { die, gInsecure } from '../lib/helpers'
 import { promptSecret } from '../lib/prompt'
 import { RpcClient } from '../lib/rpc'
 import { loadSession, resolveServerAddr, saveSession } from '../lib/session'
@@ -33,7 +33,11 @@ async function withSession(
   }
   const { host, port } = resolveAddrOrDie(opts)
   const client = await RpcClient.connect(port, host, {
-    insecure: !!opts.insecure || process.env.CRM_INSECURE === '1',
+    insecure:
+      !!opts.insecure ||
+      gInsecure ||
+      session?.insecure === true ||
+      process.env.CRM_INSECURE === '1',
   }).catch((e: Error) => die(`cannot connect to ${host}:${port}: ${e.message}`))
   try {
     await client
@@ -85,7 +89,7 @@ export function registerAdminCommands(program: Command): void {
             : die('bootstrap requires --password (non-interactive)'))
         const { host, port } = resolveAddrOrDie(opts)
         const client = await RpcClient.connect(port, host, {
-          insecure: !!opts.insecure,
+          insecure: !!opts.insecure || gInsecure,
         }).catch((e: Error) =>
           die(`cannot connect to ${host}:${port}: ${e.message}`),
         )

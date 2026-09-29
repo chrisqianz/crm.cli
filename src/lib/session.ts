@@ -3,8 +3,10 @@ import { dirname } from 'node:path'
 
 import { credentialsPath, ensurePrivateDir } from './paths'
 
-/** Saved server session: { server, username, token } at ~/.crm/credentials (0600). */
+/** Saved server session: { server, username, token, insecure? } at ~/.crm/credentials (0600). */
 export interface Session {
+  /** TLS verification was skipped at login time; keep the same behavior afterwards. */
+  insecure?: boolean
   server: string
   token: string
   username: string
@@ -19,6 +21,7 @@ export function loadSession(): Session | null {
         server: parsed.server,
         username: typeof parsed.username === 'string' ? parsed.username : '',
         token: parsed.token,
+        insecure: parsed.insecure === true,
       }
     }
     return null

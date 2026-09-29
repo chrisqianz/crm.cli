@@ -21,8 +21,9 @@ Local mode (unchanged):
 Enterprise mode (new):
   crm serve                    →  long-running daemon: DB + auth + audit + search, one process
   crm contact add ...         →  thin client, identical command surface, talks to server
-                                 (auto-remote when --remote, or CRM_SERVER+CRM_TOKEN
-                                  env both set, or [remote] config)
+                                 (auto-remote when a saved session exists, or --remote, or
+                                  CRM_SERVER+CRM_TOKEN env both set, or [remote] config; local
+                                 is an explicit opt-out: --local, CRM_LOCAL=1, or --db)
 ```
 
 Reasoning:
@@ -172,6 +173,15 @@ is retained only as an optional later add-on (same `users` table, third
 - `crm.toml` gains a `[remote]` section (`server`, `insecure` for dev) so a
   checked-in project config can point a team at their server without env
   juggling.
+
+**Mode contract (logged-in humans):**
+
+- A saved session from `crm login` routes data commands to that server by
+  default. Local is an explicit opt-out: `--local`, `CRM_LOCAL=1`, or an
+  explicit `--db <file>`; whenever local wins while logged in, a stderr
+  note says so. The login-time `--insecure` choice is stored in the
+  session and reused, so the flag is never retyped. `CRM_SERVER` set to a
+  different server than the session is refused, never mixed.
 
 **What is deliberately NOT in v1:** per-request auth on every frame (the
 connection authenticates once; frames inherit identity), mTLS, per-command
