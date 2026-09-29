@@ -2,7 +2,7 @@ import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
 import type { DB } from './db'
-import type { Company, Contact, Deal } from './drizzle-schema'
+import type { Company, Contact, Deal, Task } from './drizzle-schema'
 import * as schema from './drizzle-schema'
 import { safeJSON } from './format.ts'
 import { ServiceError } from './lib/errors'
@@ -243,6 +243,27 @@ export async function resolveDeal(
   // By title (case-insensitive exact; ambiguity → exit 3)
   const all = await db.select().from(schema.deals)
   const hit = nameCandidates('deal', all, ref, (d) => d.title)
+  if (hit) {
+    return hit
+  }
+  return null
+}
+
+export async function resolveTask(
+  db: DB,
+  rawRef: string,
+): Promise<Task | null> {
+  const ref = rawRef.trim()
+  if (ref.startsWith('tk_')) {
+    const results = await db
+      .select()
+      .from(schema.tasks)
+      .where(eq(schema.tasks.id, ref))
+    return results[0] || null
+  }
+  // By title (case-insensitive exact; ambiguity → exit 3)
+  const all = await db.select().from(schema.tasks)
+  const hit = nameCandidates('task', all, ref, (t) => t.title)
   if (hit) {
     return hit
   }

@@ -18,7 +18,7 @@ import { eq } from 'drizzle-orm'
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import * as entitySchema from '../drizzle-schema'
-import { resolveEntity } from '../resolve'
+import { resolveEntity, resolveTask } from '../resolve'
 
 /** Genesis prev_hash for the first chained row of a table. */
 export const AUDIT_GENESIS_HASH = '0'.repeat(64)
@@ -318,6 +318,19 @@ export async function auditMeta(
   if (method === 'activity.log') {
     return { entity_type: 'activity', entity_id: entityId }
   }
+  if (prefix === 'task') {
+    if (method.endsWith('.add')) {
+      return { entity_type: 'task', entity_id: entityId }
+    }
+    const ref = (params.ref as string | undefined) ?? ''
+    if (ref) {
+      const resolved = await resolveTask(db, ref)
+      if (resolved) {
+        return { entity_type: 'task', entity_id: resolved.id }
+      }
+    }
+    return { entity_type: 'task', entity_id: entityId }
+  }
   if (method === 'tag' || method === 'untag') {
     const ref = (params.ref as string | undefined) ?? ''
     if (ref) {
@@ -388,6 +401,16 @@ export async function auditEntityRow(
       .select()
       .from(entitySchema.deals)
       .where(eq(entitySchema.deals.id, entityId))
+    if (rows.length > 0) {
+      return rows[0] as unknown as Record<string, unknown>
+    }
+    return null
+  }
+  if (entityType === 'task') {
+    const rows = await db
+      .select()
+      .from(entitySchema.tasks)
+      .where(eq(entitySchema.tasks.id, entityId))
     if (rows.length > 0) {
       return rows[0] as unknown as Record<string, unknown>
     }

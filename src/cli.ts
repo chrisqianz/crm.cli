@@ -23,6 +23,7 @@ import { registerSearchCommands } from './commands/search'
 import { registerServeCommand } from './commands/serve'
 import { registerSuggestCommand } from './commands/suggest'
 import { registerTagCommands } from './commands/tag'
+import { registerTaskCommands } from './commands/task'
 import { startDaemon } from './fuse-daemon'
 import { cleanArgv } from './lib/helpers'
 import { commandsWithFlag, suggestCommands } from './lib/suggest'
@@ -55,6 +56,7 @@ registerReportCommands(program)
 registerImportExportCommands(program)
 registerDupesCommand(program)
 registerEmailCommands(program)
+registerTaskCommands(program)
 registerFuseCommands(program)
 registerServeCommand(program)
 registerLoginCommands(program)

@@ -649,14 +649,18 @@ export async function handleCommand(
       `role "${identity.role}" cannot call ${method}`,
     )
   }
-  // P3 actor threading: the service layer records the acting user on the
-  // rows it touches (local mode has no identity, so it records none).
-  // Only injected for write methods — read-only services may use `actor`
-  // as a user-facing filter (e.g. `audit list --actor`) and must not see
-  // the identity instead of the caller's explicit params.
-  const actorParams = def.write
-    ? { actor: identity.username, ...params }
-    : params
+  // P9: `caller` is the authenticated username, injected for every method
+  // so read services can implement `--mine` filters. Both `actor` and
+  // `caller` are server-owned: any caller-supplied values are stripped so a
+  // client cannot impersonate another user (the server re-injects its own,
+  // last, so it always wins). `actor` stays write-only threading metadata;
+  // `caller` is the extra identity read services may use as a filter.
+  const { actor: _actor, caller: _caller, ...restParams } = params
+  const actorParams = {
+    ...restParams,
+    caller: identity.username,
+    ...(def.write ? { actor: identity.username } : {}),
+  }
   const before = def.write
     ? await auditSnapshot(db, config, method, actorParams, null)
     : null

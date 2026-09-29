@@ -779,6 +779,84 @@ crm activity list --limit 20
 
 ---
 
+### Tasks
+
+Lightweight follow-up to-dos that link to a contact and/or deal — "what do I
+do about Acme today" is one command. Open tasks are the default view.
+
+#### `crm task add <title> [flags]`
+
+```bash
+crm task add "Call Acme re: renewal" --due 2026-07-01 --owner lin
+crm task add "Send contract" --contact jane@acme.com --deal dl_abc123
+```
+
+| Flag        | Description                                          |
+| ----------- | ---------------------------------------------------- |
+| `--due`     | Due date (`YYYY-MM-DD`) or ISO timestamp             |
+| `--owner`   | Assigned owner (a username)                          |
+| `--contact` | Link a contact (id, name, email, …)                  |
+| `--deal`    | Link a deal (id or title)                            |
+
+#### `crm task list [flags]`
+
+```bash
+crm task list                  # open tasks, due first
+crm task list --due-today      # open tasks due today
+crm task list --overdue        # open tasks past due
+crm task list --status done    # completed tasks
+crm task list --owner lin      # a specific owner
+crm task list --mine           # my tasks (remote mode)
+```
+
+| Flag          | Description                                             |
+| ------------- | ------------------------------------------------------- |
+| `--status`    | `open` (default) or `done`                              |
+| `--due-today` | Open tasks due today                                    |
+| `--overdue`   | Open tasks past their due date                          |
+| `--owner`     | Filter by assigned owner (case-insensitive)             |
+| `--mine`      | Only my tasks (remote mode; local keeps all — one user) |
+| `--contact`   | Only tasks linked to this contact                       |
+| `--limit`     | Max results                                             |
+| `--offset`    | Skip first N results                                    |
+
+#### `crm task show / done / rm <ref>`
+
+`ref` is a task id (`tk_…`) or an exact title. Ambiguous titles list the
+candidates and exit 3.
+
+```bash
+crm task show tk_01J8Z...
+crm task done "Call Acme re: renewal"
+crm task rm "Call Acme re: renewal" --force
+```
+
+---
+
+### Ownership
+
+Contacts, deals, and tasks can be assigned to a person (an `owner` — a
+username). Set it at create or edit, filter by it at list.
+
+```bash
+crm contact add 'Acme 张' --owner lin
+crm contact edit 'Acme 张' --owner bob
+crm contact list --owner lin      # case-insensitive exact
+crm contact list --mine           # my rows (remote mode)
+
+crm deal add 'Q3 报价' --owner lin --stage qualified
+crm deal list --mine
+
+crm task add 'Follow up' --owner lin
+```
+
+`--mine` filters a list to the caller's own rows. In remote mode the server
+injects the authenticated username as a server-owned `caller` (a client cannot
+forge it), so `--mine` always means "mine". In local single-user mode there is
+no caller, so `--mine` keeps every row.
+
+---
+
 ### Tags
 
 Flat labels across all entity types.

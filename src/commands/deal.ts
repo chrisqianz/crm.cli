@@ -18,6 +18,7 @@ export function registerDealCommands(program: Command) {
     .option('--company <ref>', 'Company')
     .option('--expected-close <date>', 'Expected close date')
     .option('--probability <n>', 'Win probability 0-100')
+    .option('--owner <owner>', 'Assigned owner (username)')
     .option('--tag <tag>', 'Tag', collect, [])
     .option('--set <kv>', 'Custom field', collect, [])
     .action(async (title, opts) => {
@@ -46,6 +47,8 @@ export function registerDealCommands(program: Command) {
     .option('--reverse', 'Reverse sort order')
     .option('--limit <n>')
     .option('--offset <n>')
+    .option('--owner <owner>', 'Filter by assigned owner (username)')
+    .option('--mine', 'Only my deals (remote mode)')
     .action(async (opts) => {
       const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
         'deal.list',
@@ -77,6 +80,7 @@ export function registerDealCommands(program: Command) {
     .option('--company <ref>', 'Change linked company')
     .option('--expected-close <date>', 'Expected close date (YYYY-MM-DD)')
     .option('--probability <n>', 'Win probability 0-100')
+    .option('--owner <owner>', 'Reassign owner (username)')
     .option('--add-contact <ref>', '', collect, [])
     .option('--rm-contact <ref>', '', collect, [])
     .option('--add-tag <t>', '', collect, [])

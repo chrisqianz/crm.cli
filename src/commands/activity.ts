@@ -8,7 +8,10 @@ export function registerLogCommand(program: Command) {
   program
     .command('log')
     .description('Log an activity')
-    .argument('<type>', 'Activity type (note, call, meeting, email)')
+    .argument(
+      '<type>',
+      'Activity type ([activity] types; default note, call, meeting, email)',
+    )
     .argument('<body>', 'Activity body')
     .option('--contact <ref>', 'Link to contact (repeatable)', collect, [])
     .option('--company <ref>', 'Link to company (auto-creates if needed)')
@@ -28,7 +31,7 @@ export function registerActivityCommands(program: Command) {
   const cmd = program.command('activity').description('Activity management')
   cmd
     .command('list')
-    .description('List activities (notes, calls, meetings, emails)')
+    .description('List activities (all configured types)')
     .option('--contact <ref>')
     .option('--company <ref>')
     .option('--deal <id>')

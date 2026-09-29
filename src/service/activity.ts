@@ -18,7 +18,19 @@ import {
 } from '../lib/helpers'
 import { resolveCompany, resolveContact, resolveDeal } from '../resolve'
 
-const VALID_TYPES = ['note', 'call', 'meeting', 'email']
+// P9: the accepted activity types come from config (`[activity] types`)
+// so a team can capture its real cadence (wechat, visit, entertainment,
+// dingtalk, ...) without patching the binary. The defaults below are the
+// classic four; `activityTypes(config)` is the single source of truth for
+// both validation and the CLI help text.
+export const DEFAULT_ACTIVITY_TYPES = ['note', 'call', 'meeting', 'email']
+
+export function activityTypes(config: CRMConfig): string[] {
+  const list = (config.activity?.types ?? [])
+    .map((t) => t.trim())
+    .filter(Boolean)
+  return list.length > 0 ? list : DEFAULT_ACTIVITY_TYPES
+}
 
 export interface LogParams {
   at?: string
@@ -45,10 +57,11 @@ export async function activityLog(
   if (opts.deal) {
     opts.deal = opts.deal.trim()
   }
-  if (!VALID_TYPES.includes(type)) {
+  const types = activityTypes(config)
+  if (!types.includes(type)) {
     throw new ServiceError(
       'INVALID',
-      `Error: invalid activity type "${type}". Must be one of: ${VALID_TYPES.join(', ')}`,
+      `Error: invalid activity type "${type}". Must be one of: ${types.join(', ')}`,
     )
   }
 

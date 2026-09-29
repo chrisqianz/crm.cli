@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS contacts (
   bluesky TEXT,
   telegram TEXT,
   tags TEXT NOT NULL DEFAULT '[]',
+  owner TEXT,
   custom_fields TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -62,7 +63,22 @@ CREATE TABLE IF NOT EXISTS deals (
   expected_close TEXT,
   probability INTEGER,
   tags TEXT NOT NULL DEFAULT '[]',
+  owner TEXT,
   custom_fields TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_by TEXT
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  due_at TEXT,
+  status TEXT NOT NULL DEFAULT 'open',
+  owner TEXT,
+  contact TEXT,
+  deal TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   version INTEGER NOT NULL DEFAULT 1,
@@ -232,6 +248,9 @@ async function migrateSchema(
     ['audit_log', 'row_hash', "row_hash TEXT NOT NULL DEFAULT ''"],
     // CLI ergonomics: first-class addresses on contacts
     ['contacts', 'addresses', "addresses TEXT NOT NULL DEFAULT '[]'"],
+    // P9 data model: ownership + follow-up tasks
+    ['contacts', 'owner', 'owner TEXT'],
+    ['deals', 'owner', 'owner TEXT'],
   ]
   const seen = new Set<string>()
   for (const [table] of migrations) {

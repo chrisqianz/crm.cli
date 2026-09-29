@@ -228,7 +228,10 @@ crm log meeting "Quarterly review" --company acme.com --at 2026-04-01
 crm log email "Sent follow-up pricing" --contact jane@acme.com --set channel=outbound
 ```
 
-Types: `note`, `call`, `meeting`, `email`. Contacts and companies are auto-created. `--contact` is repeatable. `--at` overrides the timestamp.
+Types: any configured type (`[activity] types` in `crm.toml`; default `note`,
+`call`, `meeting`, `email`). Add a team's real cadence (wechat, visit,
+entertainment, dingtalk) in config — no code change. Contacts and companies
+are auto-created. `--contact` is repeatable. `--at` overrides the timestamp.
 
 ### List activities
 
@@ -237,6 +240,37 @@ crm activity list --contact jane@acme.com --since 2026-01-01
 crm activity list --type call --limit 10
 crm activity list --deal dl_01... --format json
 ```
+
+## Tasks
+
+Follow-up to-dos (open by default). Link to a contact/deal so the "what next"
+is traceable.
+
+```bash
+crm task add "Call Acme re: renewal" --due 2026-07-01 --owner lin
+crm task list --due-today            # open tasks due today
+crm task list --overdue              # open tasks past due
+crm task list --mine                 # my tasks (remote mode)
+crm task done "Call Acme re: renewal"
+crm task rm "Call Acme re: renewal" --force
+```
+
+`task show/done/rm` take an id (`tk_…`) or an exact title; ambiguous titles
+exit 3.
+
+## Ownership
+
+Assign contacts/deals/tasks to a person and filter by it:
+
+```bash
+crm contact add 'Acme 张' --owner lin
+crm contact list --mine              # my rows (remote mode)
+crm deal add 'Q3 报价' --owner lin --stage qualified
+crm deal list --owner lin
+```
+
+`--mine` is server-authoritative in remote mode (a client can't forge the
+caller). Locally there is one user, so `--mine` keeps all rows.
 
 ## Tags
 

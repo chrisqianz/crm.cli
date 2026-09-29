@@ -13,6 +13,8 @@ export const contacts = sqliteTable('contacts', {
   bluesky: text('bluesky'),
   telegram: text('telegram'),
   tags: text('tags').notNull().default('[]'),
+  /** Assigned owner (a username). Null = unassigned. */
+  owner: text('owner'),
   custom_fields: text('custom_fields').notNull().default('{}'),
   created_at: text('created_at').notNull(),
   updated_at: text('updated_at').notNull(),
@@ -46,7 +48,30 @@ export const deals = sqliteTable('deals', {
   expected_close: text('expected_close'),
   probability: integer('probability'),
   tags: text('tags').notNull().default('[]'),
+  /** Assigned owner (a username). Null = unassigned. */
+  owner: text('owner'),
   custom_fields: text('custom_fields').notNull().default('{}'),
+  created_at: text('created_at').notNull(),
+  updated_at: text('updated_at').notNull(),
+  version: integer('version').notNull().default(1),
+  updated_by: text('updated_by'),
+})
+
+/**
+ * Follow-up tasks (P9): lightweight to-dos that link to a contact and/or
+ * deal so "what do I do about Acme today" is answerable from one table.
+ */
+export const tasks = sqliteTable('tasks', {
+  id: text('id').primaryKey(),
+  title: text('title').notNull(),
+  /** ISO timestamp or null (no deadline). */
+  due_at: text('due_at'),
+  /** open | done */
+  status: text('status').notNull().default('open'),
+  /** Assigned owner (a username). Null = unassigned. */
+  owner: text('owner'),
+  contact: text('contact'),
+  deal: text('deal'),
   created_at: text('created_at').notNull(),
   updated_at: text('updated_at').notNull(),
   version: integer('version').notNull().default(1),
@@ -118,3 +143,4 @@ export type Contact = InferSelectModel<typeof contacts>
 export type Company = InferSelectModel<typeof companies>
 export type Deal = InferSelectModel<typeof deals>
 export type Activity = InferSelectModel<typeof activities>
+export type Task = InferSelectModel<typeof tasks>

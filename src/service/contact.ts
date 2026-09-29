@@ -46,6 +46,8 @@ export interface ContactAddParams {
   email?: string[]
   linkedin?: string
   name?: string
+  /** Assigned owner (username). */
+  owner?: string
   phone?: string[]
   set?: string[]
   tag?: string[]
@@ -65,6 +67,7 @@ export async function contactAdd(
   opts.address = (opts.address ?? []).map((a) => a.trim()).filter((a) => a)
   opts.company = (opts.company ?? []).map((c) => c.trim())
   opts.tag = (opts.tag ?? []).map((t) => t.trim())
+  opts.owner = opts.owner?.trim()
   const cid = makeId('ct')
   const n = now()
   for (const e of opts.email ?? []) {
@@ -144,6 +147,7 @@ export async function contactAdd(
     x,
     bluesky,
     telegram,
+    owner: opts.owner || null,
     tags: JSON.stringify(opts.tag),
     custom_fields: JSON.stringify(custom),
     created_at: n,
@@ -177,7 +181,11 @@ export interface ContactListParams {
   company?: string
   filter?: string
   limit?: string
+  /** Filter to the caller's own records (remote mode). */
+  mine?: boolean
   offset?: string
+  /** Filter by assigned owner (username, case-insensitive). */
+  owner?: string
   reverse?: boolean
   sort?: string
   tag?: string
@@ -195,9 +203,24 @@ export async function contactList(
   const sort = opts.sort
   const offset = opts.offset
   const limit = opts.limit
+  // P9 ownership: --owner <name> filters by the assigned owner;
+  // --mine filters to the caller (remote only; local has no caller and
+  // keeps everything, since a single user owns all rows).
+  const owner = (opts.owner ?? '').trim().toLowerCase()
+  const caller = (p.caller as string | undefined)?.toLowerCase()
+  const mineOwner = opts.mine ? caller : undefined
   let rows = (await db.select().from(schema.contacts)).map((c) =>
     contactToRow(c),
   )
+  if (owner) {
+    rows = rows.filter(
+      (r) => (r.owner as string | null)?.toLowerCase() === owner,
+    )
+  } else if (mineOwner) {
+    rows = rows.filter(
+      (r) => (r.owner as string | null)?.toLowerCase() === mineOwner,
+    )
+  }
   // Opportunity column: the contact's open (non won/lost) deals, biggest
   // value first; a second and later deal folds into "+N more".
   {
@@ -290,6 +313,8 @@ export interface ContactEditParams {
   bluesky?: string
   linkedin?: string
   name?: string
+  /** Reassign owner (username). */
+  owner?: string
   rmAddress?: string[]
   rmCompany?: string[]
   rmEmail?: string[]
@@ -311,6 +336,7 @@ export async function contactEdit(
   if (opts.name) {
     opts.name = opts.name.trim()
   }
+  opts.owner = opts.owner?.trim()
   opts.addEmail = (opts.addEmail ?? []).map((e) => e.trim())
   opts.rmEmail = (opts.rmEmail ?? []).map((e) => e.trim())
   opts.addPhone = (opts.addPhone ?? []).map((ph) => ph.trim())
@@ -470,6 +496,7 @@ export async function contactEdit(
       x,
       bluesky,
       telegram,
+      owner: opts.owner ? opts.owner : (c.owner ?? null),
       tags: JSON.stringify(tags),
       custom_fields: JSON.stringify(custom),
       updated_at: now(),

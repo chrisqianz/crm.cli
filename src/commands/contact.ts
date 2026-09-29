@@ -21,6 +21,7 @@ export function registerContactCommands(program: Command) {
     .option('--x <h>', 'X/Twitter')
     .option('--bluesky <h>', 'Bluesky')
     .option('--telegram <h>', 'Telegram')
+    .option('--owner <owner>', 'Assigned owner (username)')
     .option('--set <kv>', 'Custom field', collect, [])
     .action(async (name, opts) => {
       const finalName = opts.name ?? name
@@ -44,6 +45,8 @@ export function registerContactCommands(program: Command) {
     .option('--limit <n>')
     .option('--offset <n>')
     .option('--filter <expr>')
+    .option('--owner <owner>', 'Filter by assigned owner (username)')
+    .option('--mine', 'Only my records (remote mode)')
     .action(async (opts) => {
       const { rows } = await dispatch<{ rows: Record<string, unknown>[] }>(
         'contact.list',
@@ -87,6 +90,7 @@ export function registerContactCommands(program: Command) {
     .option('--telegram <h>', 'Telegram')
     .option('--set <kv>', '', collect, [])
     .option('--unset <key>', '', collect, [])
+    .option('--owner <owner>', 'Reassign owner (username)')
     .option(
       '--version <n>',
       'Optimistic locking: require the contact to still be at this version (see `crm contact show`); exits 3 on conflict',

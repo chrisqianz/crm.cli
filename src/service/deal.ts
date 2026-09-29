@@ -35,6 +35,8 @@ export interface DealAddParams {
   company?: string
   contact?: string[]
   expectedClose?: string
+  /** Assigned owner (username). */
+  owner?: string
   probability?: string
   set?: string[]
   stage?: string
@@ -138,6 +140,7 @@ export async function dealAdd(
     company: companyId,
     expected_close: opts.expectedClose || null,
     probability,
+    owner: opts.owner?.trim() || null,
     tags: JSON.stringify(opts.tag),
     custom_fields: JSON.stringify(custom),
     created_at: n,
@@ -171,8 +174,12 @@ export interface DealListParams {
   filter?: string
   limit?: string
   maxValue?: string
+  /** Filter to the caller's own records (remote mode). */
+  mine?: boolean
   minValue?: string
   offset?: string
+  /** Filter by assigned owner (username, case-insensitive). */
+  owner?: string
   reverse?: boolean
   sort?: string
   stage?: string
@@ -195,7 +202,19 @@ export async function dealList(
   const sort = opts.sort
   const offset = opts.offset
   const limit = opts.limit
+  const owner = (opts.owner ?? '').trim().toLowerCase()
+  const caller = (p.caller as string | undefined)?.toLowerCase()
+  const mineOwner = opts.mine ? caller : undefined
   let rows = (await db.select().from(schema.deals)).map((d) => dealToRow(d))
+  if (owner) {
+    rows = rows.filter(
+      (r) => (r.owner as string | null)?.toLowerCase() === owner,
+    )
+  } else if (mineOwner) {
+    rows = rows.filter(
+      (r) => (r.owner as string | null)?.toLowerCase() === mineOwner,
+    )
+  }
   if (stage) {
     rows = rows.filter((d) => d.stage === stage)
   }
@@ -270,6 +289,8 @@ export interface DealEditParams {
   addTag?: string[]
   company?: string
   expectedClose?: string
+  /** Reassign owner (username). */
+  owner?: string
   probability?: string
   rmContact?: string[]
   rmTag?: string[]
@@ -304,6 +325,7 @@ export async function dealEdit(
   const actor = p.actor as string | undefined
   const title = opts.title ?? d.title
   const value = opts.value === undefined ? d.value : Number(opts.value)
+  const owner = opts.owner ? opts.owner.trim() : d.owner
   const expectedClose = opts.expectedClose
     ? opts.expectedClose.trim()
     : d.expected_close
@@ -363,6 +385,7 @@ export async function dealEdit(
       company: companyId,
       expected_close: expectedClose,
       probability,
+      owner,
       contacts: JSON.stringify(contacts),
       tags: JSON.stringify(tags),
       custom_fields: JSON.stringify(custom),

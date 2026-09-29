@@ -164,10 +164,13 @@ export async function dispatch<
       `note: local mode — you are logged in to ${sess.server} as ${sess.username || '(unknown)'}; use --remote (or drop --local) to target the server`,
     )
   }
-  const before = def.write
-    ? await auditSnapshot(db, config, method, params, null)
-    : null
   try {
+    // The before-snapshot resolves the target entity; an ambiguous ref
+    // throws CONFLICT here, so it lives inside the same try/catch that
+    // maps ServiceError → exit code (exit 3 for conflicts).
+    const before = def.write
+      ? await auditSnapshot(db, config, method, params, null)
+      : null
     const result = (await def.fn(db, config, params)) as T
     if (def.write) {
       const after = await auditSnapshot(db, config, method, params, result)

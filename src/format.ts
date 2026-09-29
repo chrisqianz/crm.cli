@@ -1,5 +1,5 @@
 import type { CRMConfig } from './config'
-import type { Activity, Company, Contact, Deal } from './drizzle-schema'
+import type { Activity, Company, Contact, Deal, Task } from './drizzle-schema'
 import { formatPhone } from './normalize.ts'
 
 export function formatOutput(
@@ -217,6 +217,7 @@ export function contactToRow(c: Contact): Record<string, unknown> {
     bluesky: c.bluesky || null,
     telegram: c.telegram || null,
     tags,
+    owner: c.owner || null,
     custom_fields: custom,
     created_at: c.created_at,
     updated_at: c.updated_at,
@@ -247,6 +248,7 @@ export function dealToRow(d: Deal): Record<string, unknown> {
     expected_close: d.expected_close || null,
     probability: d.probability ?? null,
     tags: safeJSON(d.tags),
+    owner: d.owner || null,
     custom_fields: safeJSON(d.custom_fields),
     created_at: d.created_at,
     updated_at: d.updated_at,
@@ -263,6 +265,20 @@ export function activityToRow(a: Activity): Record<string, unknown> {
     deal: a.deal || null,
     custom_fields: safeJSON(a.custom_fields),
     created_at: a.created_at,
+  }
+}
+
+export function taskToRow(t: Task): Record<string, unknown> {
+  return {
+    id: t.id,
+    title: t.title,
+    due_at: t.due_at || null,
+    status: t.status,
+    owner: t.owner || null,
+    contact: t.contact || null,
+    deal: t.deal || null,
+    created_at: t.created_at,
+    updated_at: t.updated_at,
   }
 }
 

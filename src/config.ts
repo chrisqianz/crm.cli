@@ -6,6 +6,14 @@ import { dirname, join, resolve } from 'node:path'
 import { parse as parseTOML } from 'toml'
 
 export interface CRMConfig {
+  /**
+   * P9: which activity types `crm activity log` accepts. Defaults to the
+   * four classic types; add domain-specific ones (wechat, visit,
+   * entertainment, dingtalk, ...) so a team's real cadence is capturable
+   * without patching the binary. The list is the single source of truth
+   * for validation and for the CLI help text.
+   */
+  activity: { types: string[] }
   auth: {
     lockout_threshold: number
     lockout_minutes: number
@@ -128,6 +136,7 @@ const DEFAULT_STAGES = [
 function defaultConfig(): CRMConfig {
   return {
     backup: { destination: '' },
+    activity: { types: ['note', 'call', 'meeting', 'email'] },
     database: { path: join(homedir(), '.crm', 'crm.db') },
     pipeline: {
       stages: [...DEFAULT_STAGES],
@@ -211,6 +220,12 @@ function mergeConfig(
   const given = (v: unknown): boolean => v !== undefined && v !== null
   if (override.database?.path) {
     result.database = { ...result.database, path: override.database.path }
+  }
+  if (override.activity?.types) {
+    result.activity = {
+      ...result.activity,
+      types: override.activity.types.map((t: unknown) => String(t).trim()),
+    }
   }
   if (override.pipeline) {
     result.pipeline = { ...result.pipeline }

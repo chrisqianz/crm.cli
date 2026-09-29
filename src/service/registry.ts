@@ -63,6 +63,7 @@ import {
 } from './report'
 import { findSemantic, indexRebuild, indexStatus, searchFts } from './search'
 import { tagEntity, tagList, untagEntity } from './tag'
+import { taskAdd, taskDone, taskList, taskRm, taskShow } from './task'
 
 export type MethodRole = 'reader' | 'writer' | 'admin'
 export type ServiceFn = (
@@ -151,6 +152,12 @@ export const METHODS: Record<string, MethodDef> = {
   // ── activity ──
   'activity.log': { minRole: 'writer', write: true, fn: activityLog },
   'activity.list': { minRole: 'reader', write: false, fn: activityList },
+  // ── task (P9: follow-up to-dos) ──
+  'task.add': { minRole: 'writer', write: true, fn: taskAdd },
+  'task.list': { minRole: 'reader', write: false, fn: taskList },
+  'task.show': { minRole: 'reader', write: false, fn: taskShow },
+  'task.done': { minRole: 'writer', write: true, fn: taskDone },
+  'task.rm': { minRole: 'writer', write: true, fn: taskRm },
   // ── email (outbound SMTP + auto-logged activity) ──
   'email.send': { minRole: 'writer', write: true, fn: emailSend },
   // ── audit (P4: hash chain; v1 role-level — every role can read) ──

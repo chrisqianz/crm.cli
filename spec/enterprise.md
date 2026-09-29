@@ -431,6 +431,42 @@ console on a separate plain-HTTP port — the data port stays RPC-only TLS.
 or behind a TLS proxy). HTTP status mapping: AUTH→401, FORBIDDEN→403,
   INVALID→400, NOT_FOUND→404, else 500. Body cap 1 MiB.
 
+## Data model completion (P9, as-built)
+
+Three additions close the "this is not a real CRM yet" gaps: ownership,
+follow-up tasks, and a team-shaped activity vocabulary.
+
+**Ownership (`owner` + `--mine`).**
+- `contacts` and `deals` gain an `owner` column (a username; null =
+  unassigned). Settable via `--owner` on add/edit; filterable via
+  `--owner <name>` (case-insensitive exact) on list.
+- `--mine` filters a list to the caller's own rows. In remote mode the
+  server injects the authenticated username as a **server-owned** `caller`
+  param (stripping any caller-supplied `caller`/`actor` first, then
+  re-injecting its own last, so a client cannot impersonate another user's
+  view). In local single-user mode there is no caller, so `--mine` keeps
+  every row (one user owns all rows).
+- `actor` stays write-only threading metadata; `caller` is the extra
+  identity read services may use as a filter.
+
+**Tasks (`crm task`).** A lightweight `tasks` table (title, due_at,
+status open|done, owner, contact, deal) answers "what do I do about Acme
+today":
+- `task add <title> [--due YYYY-MM-DD] [--owner u] [--contact ref] [--deal ref]`
+- `task list [--status open|done] [--due-today] [--overdue] [--owner u]
+  [--mine] [--contact ref]` — open by default; due-date filters only apply
+  to open tasks.
+- `task show / task done / task rm <ref>` — ref is an id or a
+  case-insensitive exact title (ambiguity → exit 3).
+- `task.*` methods are registered with `write: true` (auto-audited) and
+  `entity_type: 'task'` in the audit chain.
+
+**Configurable activity types.** `activity.log` validates against
+`[activity] types` in config (default `note, call, meeting, email`) instead
+of a hard-coded list, so a team can capture its real cadence (wechat, visit,
+entertainment, dingtalk, …) — or replace the defaults — without patching the
+binary. The same list drives the CLI help text.
+
 ## Out of scope for v1
 
 - Multi-tenancy (per-tenant rows in one DB)
@@ -461,6 +497,7 @@ drive the CLI client against it.
 | **P6** (6–10 wk) | **LDAP directory integration** ✅ (two-step bind, JIT provisioning, group→role mapping, in-docker LDAP in CI); field-level encryption for sensitive columns, data-subject export/delete, token expiry policy; OIDC device-code as optional add-on | Directory user logs in via `crm login`, JIT-provisions with the correct group role; no-group user hits `auth.default_role` (deny); injection-style username rejected; unreachable directory → clean `AUTH` error, no fallback to local password; right-to-erasure removes a person's data + relinks references; expired tokens rejected |
 | **P7** ✅ (0.5–1 wk) | Outbound email: dependency-free SMTP client, `[mail]` routing config + `CRM_SMTP_PASSWORD` env secret, `crm email send` with activity auto-logging, server-side send in remote mode | Mock-relay tests prove the message (from/to/cc/subject/body/auth) on the wire; activity + audit rows appear; reader refused / writer allowed; unconfigured and missing-secret fail cleanly (`test/email.test.ts` + `test/enterprise/email.test.ts`) |
 | **P8** ✅ (1–2 wk) | Web admin console on a separate HTTP port: login, Users/Tokens/Audit/Config/Clients tabs, `/api/call` JSON surface reusing RPC RBAC+audit, secret-free config view, `crm.toml`/`install.sh` client downloads with embedded server address | Console login + bearer identity; admin calls over HTTP create user/token; reader 403 on admin + config; secrets never in the response; downloads embed the RPC (not admin) port; audit rows written for console-originated writes (`test/enterprise/admin-console.test.ts`) |
+| **P9** ✅ (1–2 wk) | Data model completion: `owner` + `--mine` on contacts/deals (server-injected, tamper-proof `caller`), follow-up `tasks` entity (`add/list/show/done/rm`, `--due-today`/`--overdue`/`--owner`/`--mine`, contact/deal links, audited), configurable `[activity] types` | `--mine` returns only the caller's rows in remote mode and a forged `caller` param is ignored; task due-date filters + exit-3 title ambiguity; a configured non-default activity type is accepted while an unconfigured one is rejected (`test/ownership.test.ts`, `test/tasks.test.ts`, `test/activity-types.test.ts`, `test/enterprise/ownership.test.ts`, `test/enterprise/tasks.test.ts`) |
 
 Sequencing note: P1 introduced `users`/`tokens` + local password login; P2 already
 enforces method-level RBAC (role rank vs method minimum) and writes an audit row
