@@ -197,6 +197,12 @@ to local mode (the same service layer executes both). Activation, in
 priority order:
 
 ```bash
+# 0. logged-in session — after `crm login`, data commands go to the
+#    server by default (no flag needed anywhere)
+crm login --insecure --server crm.internal:8443
+crm contact list            # → the server
+crm contact list --local    # → explicit local, with a note on stderr
+
 # 1. per invocation — flag (token from env or saved login session)
 crm --remote crm.internal:8443 contact list
 #    (add --insecure for self-signed certs, or trust the CA)
@@ -212,13 +218,19 @@ cat >> ~/.crm/config.toml <<'EOF'
  EOF
 ```
 
-Notes:
+## The mode contract (who touches which database)
 
-- Remote mode is **explicit**: a saved `crm login` session authenticates
-  (and powers `crm admin …` / `crm whoami`) but does not by itself switch
-  data commands to the server — you opt in per invocation (`--remote`) or
-  persistently (`[remote]` / `CRM_SERVER`). That keeps local-only machines
-  local even when a token is present.
+- A **saved session** (`crm login`) routes data commands to that server —
+  no `--remote` needed. Local mode is an explicit opt-out: `--local`,
+  `CRM_LOCAL=1`, or an explicit `--db <file>`. Whenever local mode wins
+  while you are logged in, the CLI prints a note
+  (`note: local mode — you are logged in to …`) so nobody silently edits
+  the wrong database.
+- The TLS choice made at login (`--insecure`) is stored with the session
+  and reused afterwards — you never retype it.
+- `CRM_SERVER` set to a *different* server than your session is refused,
+  never mixed.
+- `crm logout` deletes the session file and everything returns to local.
 - `CRM_SERVER` without `CRM_TOKEN` never switches data commands —
   deliberate, so developers with `CRM_SERVER` set for `crm login` don't
   silently lose their local DB.
@@ -332,6 +344,31 @@ crm completion fish   # crm completion fish | source
 ```
 
 Typing an option on a command group (`crm contact --email x`) also prints a hint pointing at the subcommand that owns the flag.
+
+### Fuzzy command search
+
+As the CLI grows, you don't have to memorize the tree — describe what you want instead. `crm suggest` searches the live command tree (English **and** Chinese business vocabulary):
+
+```bash
+crm suggest 删除 客户      # → crm contact rm
+crm suggest report chart  # → crm report pipeline
+```
+
+Two more safety nets run on every mistake:
+
+- **Typo on a subcommand** → a cross-tree “you probably meant” hint (not
+  just the same level, but the whole tree).
+- **Option on the wrong command** → a hint listing which subcommands own
+  that flag.
+
+```bash
+$ crm reportt pipeline
+error: unknown command 'reportt'
+(Did you mean report?)
+hint: you probably meant:
+  crm report
+  crm report pipeline
+```
 
 ---
 
@@ -851,6 +888,27 @@ Pipeline summary with deal counts, values, and weighted values per stage.
 crm report pipeline
 crm report pipeline --format json
 crm report pipeline --format markdown > pipeline.md
+```
+
+#### Charts (no dependencies)
+
+`pipeline`, `activity`, `conversion`, `velocity`, `forecast`, `won`, and
+`lost` all accept `--chart`: a bar chart in the terminal, or a standalone
+SVG when you pass a path — embeddable in mail/docs, openable in any
+browser. No canvas, no native deps.
+
+```bash
+crm report pipeline --chart              # terminal bar chart
+crm report forecast --chart forecast.svg # SVG file (Wrote /path/forecast.svg)
+crm report won --chart                   # biggest wins first
+```
+
+```text
+Pipeline
+
+lead         ████████████████████████  300.0k  1 deals
+qualified    ████████████░░░░░░░░░░░░  150.0k  1 deals
+proposal     ██████░░░░░░░░░░░░░░░░░░  80.0k  1 deals
 ```
 
 #### `crm report activity`

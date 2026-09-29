@@ -20,10 +20,11 @@ import { registerLoginCommands } from './commands/login'
 import { registerReportCommands } from './commands/report'
 import { registerSearchCommands } from './commands/search'
 import { registerServeCommand } from './commands/serve'
+import { registerSuggestCommand } from './commands/suggest'
 import { registerTagCommands } from './commands/tag'
 import { startDaemon } from './fuse-daemon'
 import { cleanArgv } from './lib/helpers'
-import { commandsWithFlag } from './lib/suggest'
+import { commandsWithFlag, suggestCommands } from './lib/suggest'
 
 // Injected at build time via --define; falls back to package.json for dev/test
 declare const __PKG_VERSION__: string | undefined
@@ -58,6 +59,7 @@ registerLoginCommands(program)
 registerAdminCommands(program)
 registerBackupCommands(program)
 registerCompletionCommand(program)
+registerSuggestCommand(program)
 
 // Hidden subcommand: runs the FUSE daemon in-process (used by `crm mount`)
 if (cleanArgv[0] === '__daemon') {
@@ -73,7 +75,9 @@ if (cleanArgv[0] === '__daemon') {
     if (err.exitCode !== undefined && err.exitCode === 0) {
       process.exit(0)
     }
-    const hint = unknownOptionHint(program, err.message ?? '')
+    const hint =
+      unknownOptionHint(program, err.message ?? '') ??
+      unknownCommandHint(program, err.message ?? '')
     if (hint) {
       console.error(hint)
     }
@@ -91,7 +95,7 @@ if (cleanArgv[0] === '__daemon') {
  * the flag.
  */
 function unknownOptionHint(program: Command, message: string): string | null {
-  const m = /^error: unknown option '(-{1,2}[A-Za-z0-9-]+)'$/.exec(message)
+  const m = /^error: unknown option '(-{1,2}[A-Za-z0-9-]+)'/.exec(message)
   if (!m) {
     return null
   }
@@ -101,4 +105,21 @@ function unknownOptionHint(program: Command, message: string): string | null {
   }
   const list = owners.map((o) => `  crm ${o} ${m[1]}...`).join('\n')
   return `\nhint: '${m[1]}' is an option of:\n${list}`
+}
+
+/**
+ * On an unknown subcommand, suggest the closest commands across the
+ * whole tree (commander's own "did you mean" only sees one level).
+ */
+function unknownCommandHint(program: Command, message: string): string | null {
+  const m = /^error: unknown command '([^']*)'/.exec(message)
+  if (!m) {
+    return null
+  }
+  const hits = suggestCommands(program, m[1], 3)
+  if (hits.length === 0) {
+    return null
+  }
+  const list = hits.map((h) => `  crm ${h.path}`).join('\n')
+  return `\nhint: you probably meant:\n${list}`
 }

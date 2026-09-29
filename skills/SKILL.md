@@ -483,3 +483,6 @@ Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-
 - **Positional name:** `crm contact add "Jane Doe" --email jane@acme.com` (the name/title can be the first argument instead of `--name`/`--title`).
 - **Addresses:** `crm contact add --address "..."` (repeatable) / `crm contact edit --add-address` / `--rm-address`; exposed as `addresses[]` in rows.
 - **`open_deal` column:** every `contact list` row carries `open_deal` — the contact's open (non won/lost) deal as `title (stage, value)`, biggest first, `+N more` when several. Use it to answer "who do I chase this week" without a join.
+- **Mode contract (humans):** after `crm login`, data commands default to the server; local is an explicit opt-out (`--local`, `CRM_LOCAL=1`, or `--db`). Agents should keep using the env pattern (`CRM_SERVER` + `CRM_TOKEN`) — a session file is a human artifact.
+- **Charts:** `crm report pipeline|activity|conversion|velocity|forecast|won|lost --chart` prints a terminal bar chart; `--chart out.svg` writes a standalone SVG (no deps). Use it when the user wants a visual.
+- **`crm suggest <words>`** finds the command for a fuzzy description (English or Chinese, e.g. `suggest 删除 客户` → `crm contact rm`). If a command fails with `unknown command`, the printed `hint:` block already lists the closest matches — read it instead of guessing.
