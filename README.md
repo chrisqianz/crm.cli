@@ -63,6 +63,27 @@ claude skills add https://github.com/dzhng/crm.cli/tree/main/skills
 cp skills/SKILL.md ~/.your-agent/skills/crm-cli/SKILL.md
 ```
 
+### Installed, not logged in
+
+A fresh install points at nothing, and `crm` does not guess. The first
+`crm contact list` fails instead of creating a database nobody asked for:
+
+```
+Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host
+```
+
+So name a target: `crm login <host:port>` — the address comes from your admin
+console — or point at your own file with `--db <path>`, `CRM_DB`, or
+`[database] path` in your config. The commands that run where the database
+lives (`serve`, `backup`, `mount`, `export-fs`, `admin`) answer the same way
+until something names it:
+
+```
+Error: server-host command — needs --db or a [database] path in your config
+```
+
+Both exit 1. Full order below: [The mode contract](#the-mode-contract-who-touches-which-database).
+
 ## Storage
 
 Everything lives in a single SQLite file, and you name it: `--db <path>`,
@@ -107,7 +128,7 @@ stages = ["discovery", "demo", "trial", "closed-won", "closed-lost"]' > ./crm.to
 mkdir -p ~/.crm
 cat > ~/.crm/config.toml << 'EOF'
 [database]
-path = "~/.crm/crm.db"
+path = "~/.crm/crm.db"   # writing this line is what opts a machine into local mode
 
 [pipeline]
 stages = ["lead", "qualified", "proposal", "negotiation", "closed-won", "closed-lost"]
@@ -139,12 +160,13 @@ Settings in a closer `crm.toml` override the global config. The `--config` flag 
 
 ## Enterprise Mode (server)
 
-Local mode is the default: one SQLite file, zero setup. For a team, run
-**one server** and point every machine (and every agent) at it:
+Local mode is one SQLite file you name (`--db`, `CRM_DB`, or `[database]` in
+your config) — no daemon, no setup. For a team, run **one server** and point
+every machine (and every agent) at it:
 
 ```bash
 # the server host (port 8443 by default, TLS always on)
-crm serve
+crm serve --db /data/crm.db      # or [database] path in the server's crm.toml
 
 # every other machine: log in once (proves you may use the server),
 # then point the CLI at it with a config line or the --remote flag
@@ -200,18 +222,12 @@ to local mode (the same service layer executes both). Activation, in
 priority order:
 
 ```bash
-# 0. logged-in session — after `crm login`, data commands go to the
-#    server by default (no flag needed anywhere)
-crm login --insecure --server crm.internal:8443
-crm contact list            # → the server
-crm contact list --local    # → explicit local, with a note on stderr
+# 1. environment — the agent pattern (no session file, no TTY)
+CRM_SERVER=crm.internal:8443 CRM_TOKEN=crm_… CRM_INSECURE=1 crm contact add …
 
-# 1. per invocation — flag (token from env or saved login session)
+# 2. per invocation — flag (token from env or saved login session)
 crm --remote crm.internal:8443 contact list
 #    (add --insecure for self-signed certs, or trust the CA)
-
-# 2. environment — the agent pattern (no session file, no TTY)
-CRM_SERVER=crm.internal:8443 CRM_TOKEN=crm_… CRM_INSECURE=1 crm contact add …
 
 # 3. config — team default on every machine (token from env or session)
 cat >> ~/.crm/config.toml <<'EOF'
@@ -219,7 +235,17 @@ cat >> ~/.crm/config.toml <<'EOF'
  server = "crm.internal:8443"
  insecure = false   # true for self-signed certs
  EOF
+
+# 4. a logged-in session — after `crm login`, data commands go to that server
+#    with no flag anywhere; naming a database (--db, or --local with a db you
+#    can name) opts out, explicitly, and says so on stderr
+crm login --insecure --server crm.internal:8443
+crm contact list                    # → the server
+crm --db ./my-project.db contact list   # → the local file
 ```
+
+Nothing else activates anything: with no server and no database named, a data
+command fails with `Error: not connected …` instead of picking a file for you.
 
 ## The mode contract (who touches which database)
 
@@ -229,17 +255,31 @@ cat >> ~/.crm/config.toml <<'EOF'
   while you are logged in, the CLI prints a note
   (`note: local mode — you are logged in to …`) so nobody silently edits
   the wrong database.
+- **The full order, first match wins:** `CRM_SERVER` + `CRM_TOKEN` →
+  `--remote` / `[remote] server` in config → explicit local intent (`--db`
+  always names a database; `--local` / `CRM_LOCAL=1` need one to point at)
+  → saved session → a `[database] path` you wrote into your own config.
+- **Nothing named a target → nothing runs.** No database path is ever
+  invented and there is no silent local mode. A data command says
+  `Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host`;
+  a host command (`serve`, `backup`, `mount`, `export-fs`, `admin`) says
+  `Error: server-host command — needs --db or a [database] path in your config`.
+  Both exit 1.
 - The TLS choice made at login (`--insecure`) is stored with the session
   and reused afterwards — you never retype it.
 - `CRM_SERVER` set to a *different* server than your session is refused,
   never mixed.
-- `crm logout` deletes the session file and everything returns to local.
+- `crm logout` deletes the session file. Data commands then need `--remote`,
+  `CRM_SERVER` + `CRM_TOKEN`, or a database you named — they do not drop
+  back into a local file.
 - `CRM_SERVER` without `CRM_TOKEN` never switches data commands —
   deliberate, so developers with `CRM_SERVER` set for `crm login` don't
   silently lose their local DB.
-- A remote client never touches a local SQLite file — no `~/.crm/crm.db`
-  is created, ever. (A config file may still be created for local display
-  preferences; that's not data.)
+- **A remote client holds no business data** — it opens no SQLite file and
+  writes no CRM rows locally; it renders the server's response. What a client
+  machine *does* hold is what you put there: the session token
+  (`~/.crm/credentials`, 0600), your config, and the artifacts you asked for
+  (`crm export > file`). None of those hold CRM records.
 - `crm rm …` **requires `--force`** in remote mode: the server has no TTY
 to confirm. Local interactive mode still prompts.
 - `crm import …` reads the CSV/JSON on the client and sends the parsed
@@ -314,7 +354,7 @@ default_role = "none"            # role for a directory user in no mapped group
 | Code | Meaning    | Example                                                        |
 | ---- | ---------- | -------------------------------------------------------------- |
 | `0`  | Success    | Command completed                                              |
-| `1`  | Error      | Bad input, not found, hook rejection, auth failure             |
+| `1`  | Error      | Bad input, not found, hook rejection, auth failure, `not connected` (no server, no database named), `server-host command` (host command with no `--db` / `[database] path`) |
 | `3`  | Conflict   | Stale optimistic-locking `--version`, ambiguous name ref (candidates listed), duplicate email/website, or any other write rejected because the data changed underneath you |
 
 Conflict errors are **recoverable**: the message tells you the current version, re-read the entity (`crm contact show <id>`) and retry with the new `--version`. An ambiguous name ref is recovered the same way: pick the right id from the printed list.
@@ -1347,7 +1387,7 @@ crm serve            # CRM_SMTP_PASSWORD must be set in the environment
 so you manage the server from a browser instead of the CLI:
 
 ```bash
-crm serve --admin-port 8586        # console on http://<host>:8586 (0 = auto)
+crm serve --db /data/crm.db --admin-port 8586   # console on http://<host>:8586 (0 = auto)
 ```
 
 Omit `--admin-port` and the console is off (the data port is RPC-only,
@@ -1679,7 +1719,7 @@ Mount the CRM as a read/write filesystem. AI agents (or humans) can explore CRM 
 ### Mount
 
 ```bash
-crm mount ~/crm                         # mount with default DB
+crm mount ~/crm                         # mount the database your config names
 crm mount ~/crm --db ./team.db          # mount a specific database
 crm mount ~/crm --readonly              # read-only mode (no writes)
 crm unmount ~/crm                       # unmount

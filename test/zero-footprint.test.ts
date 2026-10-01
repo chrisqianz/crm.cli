@@ -2,15 +2,17 @@
  * Zero footprint (spec/client-repl.md, sub-project A): a machine that was
  * never told where its database lives must say so instead of creating one.
  * Host commands (`serve`, `backup`, `mount`, `export-fs`) take the fixed
- * NEEDS_DB copy; the client-side "not connected" copy lands with the mode
- * contract.
+ * NEEDS_DB copy; the client-side "not connected" failure takes NOT_CONNECTED.
+ * Both are asserted as the constants exported by src/remote/dispatch.ts, so a
+ * change to the copy has to be made in one place and shows up here as a
+ * deliberate test edit.
  */
 import { describe, expect, test } from 'bun:test'
 import { mkdtempSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { NEEDS_DB } from '../src/remote/dispatch'
+import { NEEDS_DB, NOT_CONNECTED } from '../src/remote/dispatch'
 
 function cli(home: string, args: string[]) {
   const env: Record<string, string> = {
@@ -111,7 +113,7 @@ describe('zero footprint: no implicit local mode', () => {
       'g@x.io',
     ])
     expect(r.code).toBe(1)
-    expect(r.out).toContain("run 'crm login")
+    expect(r.out).toContain(NOT_CONNECTED)
     expect(leaked(home)).toEqual([])
   })
   test('CRM_LOCAL=1 alone fails with the same guidance, no files', () => {
@@ -132,9 +134,7 @@ describe('zero footprint: no implicit local mode', () => {
       stderr: 'pipe',
     })
     expect(p.exitCode).toBe(1)
-    expect(p.stderr.toString() + p.stdout.toString()).toContain(
-      "run 'crm login",
-    )
+    expect(p.stderr.toString() + p.stdout.toString()).toContain(NOT_CONNECTED)
     expect(leaked(home)).toEqual([])
   })
   test('explicit --db still works', () => {

@@ -50,6 +50,15 @@ export const NEEDS_DB =
   'Error: server-host command — needs --db or a [database] path in your config'
 
 /**
+ * Prefix of the stderr note `dispatch()` prints when local mode wins while a
+ * session is live (step 3 beating step 4): the user is about to write a
+ * database that is not the one they logged in to. Exported, and asserted by
+ * test/enterprise/mode-contract.test.ts, so the sentence lives in exactly one
+ * place. The server and username are interpolated after it.
+ */
+export const LOCAL_MODE_NOTE = 'note: local mode — you are logged in to'
+
+/**
  * `resolveEndpoint()` returns a remote endpoint, `null` for local mode, or
  * `'unresolved'` when nothing named a server *or* a database. Which fixed
  * error that last case becomes depends on the class of command asking — A1's
@@ -220,7 +229,7 @@ export async function dispatch<
       process.env.CRM_LOCAL === 'true')
   ) {
     console.error(
-      `note: local mode — you are logged in to ${sess.server} as ${sess.username || '(unknown)'}; use --remote (or drop --local) to target the server`,
+      `${LOCAL_MODE_NOTE} ${sess.server} as ${sess.username || '(unknown)'}; use --remote (or drop --local) to target the server`,
     )
   }
   try {

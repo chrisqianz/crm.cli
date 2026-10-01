@@ -34,7 +34,7 @@ Optional. Create `crm.toml` in your project root or `~/.crm/config.toml`:
 
 ```toml
 [database]
-path = "~/.crm/crm.db"
+path = "~/.crm/crm.db"    # declares this machine's local database (see Modes below)
 
 [pipeline]
 stages = ["lead", "qualified", "proposal", "negotiation", "closed-won", "closed-lost"]
@@ -54,6 +54,8 @@ default_path = "~/crm"
 
 Config is auto-discovered by walking up from the current directory. Override with `--config <path>` or `CRM_CONFIG` env var.
 
+`[database] path` is what makes a machine a **local** one — writing that line is the declaration; without it (and without `--db`) nothing points at a file. A server-issued `crm.toml` contains `[remote]` only, so a client stays a client.
+
 ## Global Flags
 
 Every command accepts:
@@ -62,7 +64,28 @@ Every command accepts:
   commands need a path from here or from `[database] path` in your config
 - `--format <fmt>` — Output format: `table`, `json`, `csv`, `tsv`, `ids`
 - `--config <path>` — TOML config file path
+- `--remote [addr]` — run data commands against a server (env: `CRM_SERVER`)
+- `--insecure` — skip TLS certificate verification, self-signed certs (env: `CRM_INSECURE`)
 - `--no-color` — Disable colored output
+
+## Modes: a server, or a database you name
+
+Every command resolves its target in this order — first match wins:
+
+1. `CRM_SERVER` **and** `CRM_TOKEN` set → remote (the agent/service pattern)
+2. `--remote [addr]` or `[remote] server` in config → remote
+3. Local intent → local. `--db <path>` names a database and beats a logged-in session; `--local` / `CRM_LOCAL=1` are switches and additionally need a database to point at (`--db`, `CRM_DB` or `[database] path`)
+4. A saved `crm login` session → remote; no session but `[database] path` in your own config → local
+5. Nothing named → nothing runs. No database is created, no file is guessed
+
+Two failures you will see, both **exit 1** (fixed copy, match on the prefix):
+
+| Error | Means | Do |
+|---|---|---|
+| `Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host` | No server configured and no database named | Ask the human for the server address (or have them log in), or pass `--db <path>` |
+| `Error: server-host command — needs --db or a [database] path in your config` | `serve` / `backup` / `mount` / `export-fs` / `admin` run where the database lives and nothing named it | Re-run on the database host with `--db <path>` |
+
+A remote command is byte-identical to the local one — the same service layer runs on the server. In remote mode no local database is opened: a client machine holds no CRM records (what it does hold is `~/.crm/credentials` — a 0600 token — plus whatever config you put there).
 
 ## Contacts
 
@@ -369,8 +392,11 @@ Mount the CRM as a live read/write filesystem. Any tool that reads files gets fu
 
 ```bash
 crm mount ~/crm
+crm mount ~/crm --db ./team.db
 crm mount ~/crm --readonly
 ```
+
+Mounting reads the database directly, so it is a host command: it needs the path named (`--db`, or `[database] path` in the config you pass) and fails with the `server-host command` error otherwise.
 
 On Linux this uses FUSE. On macOS this uses an NFS v3 server (no kernel extensions needed).
 
@@ -452,7 +478,7 @@ crm unmount ~/crm
 crm export-fs ./crm-snapshot
 ```
 
-Exports the same directory structure as a static copy — useful in containers or sandboxes where FUSE isn't available.
+Exports the same directory structure as a static copy — useful in containers or sandboxes where FUSE isn't available. Host command: name the database (`--db <path>`) or declare it in your config.
 
 ## Bulk Operations
 
@@ -502,7 +528,7 @@ Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-
 
 ## Tips for AI Agents
 
-- **Mount first:** `crm mount ~/crm` gives you filesystem access — read JSON files directly instead of running CLI commands
+- **Mount first:** `crm mount ~/crm` gives you filesystem access — read JSON files directly instead of running CLI commands. It reads the database locally, so it needs the path named and does not work against a remote server
 - **Read `llm.txt`:** The mount point contains `llm.txt` with structure docs and tips
 - **Use `_by-*` directories** for fast lookups: `_by-email`, `_by-phone`, `_by-linkedin`, `_by-tag`, `_by-stage`
 - **Use `--format json`** for all CLI output when processing programmatically
@@ -518,7 +544,7 @@ Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-
 - **Positional name:** `crm contact add "Jane Doe" --email jane@acme.com` (the name/title can be the first argument instead of `--name`/`--title`).
 - **Addresses:** `crm contact add --address "..."` (repeatable) / `crm contact edit --add-address` / `--rm-address`; exposed as `addresses[]` in rows.
 - **`open_deal` column:** every `contact list` row carries `open_deal` — the contact's open (non won/lost) deal as `title (stage, value)`, biggest first, `+N more` when several. Use it to answer "who do I chase this week" without a join.
-- **Mode contract (humans):** after `crm login`, data commands default to the server; local is an explicit opt-out (`--local`, `CRM_LOCAL=1`, or `--db`). Agents should keep using the env pattern (`CRM_SERVER` + `CRM_TOKEN`) — a session file is a human artifact.
+- **Modes:** see [Modes: a server, or a database you name](#modes-a-server-or-a-database-you-name). After `crm login`, data commands default to the server; local mode needs a database you named (`--db`, or `--local` with one). Agents should keep using the env pattern (`CRM_SERVER` + `CRM_TOKEN`) — a session file is a human artifact. A command that names neither fails with exit 1 (`not connected`); ask the human rather than guessing a path.
 - **Charts:** `crm report pipeline|activity|conversion|velocity|forecast|won|lost --chart` prints a terminal bar chart; `--chart out.svg` writes a standalone SVG (no deps). Use it when the user wants a visual.
 - **`crm suggest <words>`** finds the command for a fuzzy description (English or Chinese, e.g. `suggest 删除 客户` → `crm contact rm`). If a command fails with `unknown command`, the printed `hint:` block already lists the closest matches — read it instead of guessing.
 - **Outbound email:** `crm email send <contact> --subject ... --body ...` sends through the server's SMTP relay (needs `[mail]` + `CRM_SMTP_PASSWORD` on the server) and auto-logs an `email` activity — prefer it over shelling out to `mail`/SMTP so the CRM record stays current. Recipient defaults to the contact's first email; `--to`/`--cc`/`--body-file`/`--deal` available. Writer+ only.

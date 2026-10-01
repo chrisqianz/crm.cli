@@ -4,7 +4,8 @@ This spec covers the enterprise adaptation of crm.cli: centralized deployment,
 authentication, multi-user access, audit, and the remote service layer. It
 builds on the foundations in `architecture.md` (single SQLite file, daemon as
 the logic choke point, spec-first methodology) and does not change local-mode
-behavior.
+behavior — with one later exception, A1: local mode exists only when you name
+the database (see Mode contract below).
 
 Repo forked from `dzhng/crm.cli` (MIT) to `chrisqianz/crm.cli`. npm package
 renamed to `@chrisqianz/crm.cli`. Upstream sync: monthly `git fetch upstream`,
@@ -15,15 +16,16 @@ no expectation of active upstream development.
 Local mode (today) and enterprise mode (new) share all business logic.
 
 ```
-Local mode (unchanged):
-  crm contact add ...          →  opens ~/.crm/crm.db directly (stateless process)
+Local mode (explicit):
+  crm --db ./crm.db contact add ...  →  opens the named file directly (stateless process)
 
 Enterprise mode (new):
   crm serve                    →  long-running daemon: DB + auth + audit + search, one process
   crm contact add ...         →  thin client, identical command surface, talks to server
-                                 (auto-remote when a saved session exists, or --remote, or
-                                  CRM_SERVER+CRM_TOKEN env both set, or [remote] config; local
-                                 is an explicit opt-out: --local, CRM_LOCAL=1, or --db)
+                                 (CRM_SERVER+CRM_TOKEN env, --remote, [remote] config, or a
+                                  saved session; local mode is opt-in — you name the database
+                                  with --db, CRM_DB or a config [database] path. Nothing is
+                                  invented: no target means no write, see Mode contract below)
 ```
 
 Reasoning:
@@ -32,9 +34,10 @@ Reasoning:
    validation, normalization, search, and writes behind a newline-delimited
    JSON protocol. Enterprise mode upgrades that process from a temporary mount
    helper to a persistent service. It is not a second architecture.
-2. **Local mode stays.** Personal use and offline use keep working with zero
-   change. The 450 functional tests continue to cover both forms because they
-   spawn the CLI, and in local mode the CLI behaves exactly as it does today.
+2. **Local mode stays.** Personal use and offline use keep working; naming
+   the database is now part of it (Mode contract below). The 450 functional
+   tests continue to cover both forms because they spawn the CLI, and in
+   local mode the CLI behaves exactly as it does today.
 3. **No client-side business logic in remote mode.** Validation,
    normalization, dedupe, and search all run server-side. The remote CLI is a
    transport + formatter. This keeps one source of truth for behavior.
@@ -174,14 +177,38 @@ is retained only as an optional later add-on (same `users` table, third
   checked-in project config can point a team at their server without env
   juggling.
 
-**Mode contract (logged-in humans):**
+**Mode contract (A1 — how a data command picks its target):**
 
-- A saved session from `crm login` routes data commands to that server by
-  default. Local is an explicit opt-out: `--local`, `CRM_LOCAL=1`, or an
-  explicit `--db <file>`; whenever local wins while logged in, a stderr
-  note says so. The login-time `--insecure` choice is stored in the
-  session and reused, so the flag is never retyped. `CRM_SERVER` set to a
-  different server than the session is refused, never mixed.
+Resolution order, first match wins:
+
+1. `CRM_SERVER` **and** `CRM_TOKEN` are set → remote (the agent pattern).
+2. `--remote` / `[remote] server` in config → remote (explicit opt-in).
+3. Explicit local intent → local. An explicit `--db <file>` names a database
+   and beats a saved session; `--local` / `CRM_LOCAL=1` are switches, not
+   targets, so they additionally need a nameable database (`--db`, `CRM_DB` or
+   a config `[database] path`) — with none of those they fail like step 5.
+4. A saved session from `crm login` → remote. No session, but the user's own
+   config declares `[database] path` → local.
+5. Nothing named a target → fail, exit 1, no fallback. A data command says:
+
+   ```
+   Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host
+   ```
+
+   A host command — `serve`, `backup`, `mount`, `export-fs`, `admin`, the
+   commands that run where the database lives — says:
+
+   ```
+   Error: server-host command — needs --db or a [database] path in your config
+   ```
+
+There is no implicit local mode and no database path is ever invented: the old
+`~/.crm/crm.db` default is gone from `loadConfig`, which is what makes a client
+install hold no business data (spec/client-repl.md §A). The login-time
+`--insecure` choice is stored in the session and reused, so the flag is never
+retyped. `CRM_SERVER` set to a different server than the session is refused,
+never mixed. Whenever local mode wins while a session is live, a stderr note
+(`note: local mode — you are logged in to …`) says so.
 
 **What is deliberately NOT in v1:** per-request auth on every frame (the
 connection authenticates once; frames inherit identity), mTLS, per-command
@@ -560,6 +587,10 @@ chain of LTX files; `restore` rebuilds a full SQLite file from it.
   `CRM_SERVER` alone (no `CRM_TOKEN`) does **not** switch data commands to
   remote — deliberate, so developers with `CRM_SERVER` set for `crm login`
   don't lose their local DB.
+  *Superseded in part by A1 (spec/client-repl.md): a saved session now routes
+  data commands to its server by default, and local mode exists only when you
+  name a database. See **Mode contract** above; `CRM_SERVER` alone still does
+  not switch.*
 - **`rm` in remote mode requires `--force`**: the server has no TTY to confirm.
   Local interactive `rm` still prompts; its refusal messages are
   byte-identical in both modes.

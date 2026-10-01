@@ -31,17 +31,8 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { NOT_CONNECTED } from '../../src/remote/dispatch'
+import { LOCAL_MODE_NOTE, NOT_CONNECTED } from '../../src/remote/dispatch'
 import { bootstrapOwner, startServer, type TestServer } from './helpers'
-
-/**
- * Prefix of the fixed local-mode note that dispatch() writes to stderr when
- * local mode wins over a session — see the `console.error` in
- * src/remote/dispatch.ts (`note: local mode — you are logged in to
- * <server> as <user>; use --remote …`). Asserted as a prefix plus the values
- * it interpolates, so the test does not restate the whole sentence.
- */
-const LOCAL_NOTE = 'note: local mode — you are logged in to'
 
 let srv: TestServer | null = null
 let token = ''
@@ -210,7 +201,7 @@ describe('mode contract: how a data command resolves its target', () => {
       db,
     ])
     expect(r.code).toBe(0)
-    expect(r.err).toContain(LOCAL_NOTE)
+    expect(r.err).toContain(LOCAL_MODE_NOTE)
     expect(r.err).toContain(`127.0.0.1:${srv?.port} as admin`)
     expect(serverContacts()).not.toContain('ModeContractC')
     expect(run(home, ['contact', 'list', '--db', db]).out).toContain(
@@ -225,7 +216,7 @@ describe('mode contract: how a data command resolves its target', () => {
     const db = join(mkdtempSync(join(tmpdir(), 'crm-mode-db-')), 'x.db')
     const r = run(home, ['contact', 'add', 'ModeContractG', '--db', db])
     expect(r.code).toBe(0)
-    expect(r.err).toContain(LOCAL_NOTE)
+    expect(r.err).toContain(LOCAL_MODE_NOTE)
     expect(r.err).toContain(`127.0.0.1:${srv?.port} as admin`)
     expect(serverContacts()).not.toContain('ModeContractG')
     expect(run(home, ['contact', 'list', '--db', db]).out).toContain(
@@ -249,7 +240,7 @@ describe('mode contract: how a data command resolves its target', () => {
     expect(serverContacts()).toContain('ModeContractE')
     // Local mode never won, so no local database was opened at all: the
     // declared file is absent, not merely missing the row.
-    expect(r.err).not.toContain(LOCAL_NOTE)
+    expect(r.err).not.toContain(LOCAL_MODE_NOTE)
     expect(existsSync(db)).toBe(false)
     expect(dbFilesUnder(home)).toEqual([])
   })
@@ -269,7 +260,7 @@ describe('mode contract: how a data command resolves its target', () => {
     )
     expect(r.code).toBe(0)
     // Nothing was logged in, so there is nothing to warn about.
-    expect(r.err).not.toContain(LOCAL_NOTE)
+    expect(r.err).not.toContain(LOCAL_MODE_NOTE)
     expect(serverContacts()).not.toContain('ModeContractH')
     expect(existsSync(db)).toBe(true)
     expect(run(home, ['contact', 'list', '--db', db]).out).toContain(
