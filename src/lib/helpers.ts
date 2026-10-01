@@ -76,9 +76,16 @@ export function die(msg: string, code = 1): never {
   console.error(msg)
   process.exit(code)
 }
+/**
+ * Repeatable-flag collector. It returns a new array instead of pushing into
+ * `prev`: commander reuses one program across parses and the `[]` default is
+ * the *same array* it hands back as `prev`, so a mutating collector leaks one
+ * command's flags into the next parse. Invisible in one-shot mode (one parse
+ * per process), fatal in a REPL session, where a second
+ * `contact add --email` would inherit the first one's emails.
+ */
 export function collect(v: string, prev: string[]) {
-  prev.push(v)
-  return prev
+  return [...prev, v]
 }
 
 export function confirmOrForce(force: boolean | undefined, label: string) {

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { pathToFileURL } from 'node:url'
+
 import { Command } from 'commander'
 
 import {
@@ -27,6 +29,7 @@ import { registerTaskCommands } from './commands/task'
 import { startDaemon } from './fuse-daemon'
 import { cleanArgv } from './lib/helpers'
 import { commandsWithFlag, suggestCommands } from './lib/suggest'
+import { runRepl } from './repl/repl'
 
 // Injected at build time via --define; falls back to package.json for dev/test
 declare const __PKG_VERSION__: string | undefined
@@ -36,42 +39,75 @@ const version =
         .version
     : __PKG_VERSION__
 
-const program = new Command()
-// -V prints the CLI version. `--version` is intentionally NOT a program-level
-// flag: it is the optimistic-locking argument of `contact/company/deal edit`
-// and `deal move` (a top-level --version would swallow the subcommand flag).
-program.name('crm').description('Headless CLI-first CRM').version(version, '-V')
-program.exitOverride()
+/**
+ * The whole command tree, built fresh. Exported for the REPL, which executes
+ * every line through this same program; the entry-side work at the bottom of
+ * this file only runs when the process started here, so importing
+ * `buildProgram` never parses the host's argv.
+ */
+export function buildProgram(): Command {
+  const program = new Command()
+  // -V prints the CLI version. `--version` is intentionally NOT a program-level
+  // flag: it is the optimistic-locking argument of `contact/company/deal edit`
+  // and `deal move` (a top-level --version would swallow the subcommand flag).
+  program
+    .name('crm')
+    .description('Headless CLI-first CRM')
+    .version(version, '-V')
+  program.exitOverride()
 
-registerContactCommands(program)
-registerAuditCommands(program)
-registerCompanyCommands(program)
-registerDealCommands(program)
-registerPipelineCommand(program)
-registerLogCommand(program)
-registerActivityCommands(program)
-registerTagCommands(program)
-registerSearchCommands(program)
-registerReportCommands(program)
-registerImportExportCommands(program)
-registerDupesCommand(program)
-registerEmailCommands(program)
-registerTaskCommands(program)
-registerFuseCommands(program)
-registerServeCommand(program)
-registerLoginCommands(program)
-registerAdminCommands(program)
-registerBackupCommands(program)
-registerCompletionCommand(program)
-registerSuggestCommand(program)
+  registerContactCommands(program)
+  registerAuditCommands(program)
+  registerCompanyCommands(program)
+  registerDealCommands(program)
+  registerPipelineCommand(program)
+  registerLogCommand(program)
+  registerActivityCommands(program)
+  registerTagCommands(program)
+  registerSearchCommands(program)
+  registerReportCommands(program)
+  registerImportExportCommands(program)
+  registerDupesCommand(program)
+  registerEmailCommands(program)
+  registerTaskCommands(program)
+  registerFuseCommands(program)
+  registerServeCommand(program)
+  registerLoginCommands(program)
+  registerAdminCommands(program)
+  registerBackupCommands(program)
+  registerCompletionCommand(program)
+  registerSuggestCommand(program)
 
-// Hidden subcommand: runs the FUSE daemon in-process (used by `crm mount`)
-if (cleanArgv[0] === '__daemon') {
-  startDaemon(cleanArgv.slice(1)).catch((err) => {
-    console.error('fuse-daemon fatal:', err)
-    process.exit(1)
-  })
-} else {
+  return program
+}
+
+if (isCliEntrypoint()) {
+  await main()
+}
+
+async function main(): Promise<void> {
+  const program = buildProgram()
+
+  // Hidden subcommand: runs the FUSE daemon in-process (used by `crm mount`)
+  if (cleanArgv[0] === '__daemon') {
+    startDaemon(cleanArgv.slice(1)).catch((err) => {
+      console.error('fuse-daemon fatal:', err)
+      process.exit(1)
+    })
+    return
+  }
+
+  // Nothing but global flags and a terminal to type at: that is the human
+  // path. Non-TTY keeps commander's usage error, so the machine surface
+  // (`crm` with no args in a script) is untouched.
+  if (
+    cleanArgv.length === 0 &&
+    (process.stdin.isTTY || process.env.CRM_REPL_FORCE === '1')
+  ) {
+    await runRepl(program)
+    return
+  }
+
   try {
     program.parse(['node', 'crm', ...cleanArgv])
   } catch (e: unknown) {
@@ -90,6 +126,26 @@ if (cleanArgv[0] === '__daemon') {
     }
     console.error(err.message || e)
     process.exit(1)
+  }
+}
+
+/**
+ * True when this module is the process entrypoint. `import.meta.main` covers
+ * bun; the argv/URL comparison covers the bundled `dist/cli.js` run by node,
+ * where bun's flag is not available.
+ */
+function isCliEntrypoint(): boolean {
+  if (import.meta.main === true) {
+    return true
+  }
+  const entry = process.argv[1]
+  if (!entry) {
+    return false
+  }
+  try {
+    return pathToFileURL(entry).href === import.meta.url
+  } catch {
+    return false
   }
 }
 
