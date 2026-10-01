@@ -32,7 +32,7 @@
 
 **Interfaces:**
 - Consumes: the commander `program` (imported from cli.ts — refactor cli.ts to export the built program as `buildProgram(): Command` while keeping top-level side effects working for `bun src/cli.ts` spawns; the `__daemon`/parse branch stays in cli.ts).
-- Produces: `runRepl(program: Command, io?: {input, output}): Promise<void>`; `handleLine(line: string, ctx: ReplContext): Promise<ReplOutcome>` where `ReplOutcome = { kind: 'exec'; argv: string[] } | { kind: 'session'; op: 'quit' | 'logout' | 'help' | 'status' } | { kind: 'reply'; text: string }` (Tasks 2–5 extend the union — define it as a discriminated union now, extend, don't redesign). `ReplContext` holds `{ program, home: string, isLocal: boolean }`.
+- Produces: `runRepl(program: Command, io?: {input, output}): Promise<void>`; `handleLine(line: string, ctx: ReplContext): Promise<Intent>` — **Task 2's `Intent` union is the contract from day one**: define `parser.ts` now with the full discriminated union (session/exec/wizard/open/openWord/macro — copy the exact shape from Task 2's Interfaces block) and have Task 1's `handleLine` only ever construct `session`, `exec`, and `reply`-via-`exec` outcomes (helper functions live in repl.ts; the union itself never gets redesigned). `ReplContext` holds `{ program, home: string, entryArgv: string[] }`.
 
 Entry gate in `src/cli.ts` **before** `program.parse`: `cleanArgv.length === 0 && (process.stdin.isTTY || process.env.CRM_REPL_FORCE === '1')` → `await runRepl(program)`; non-TTY no-args keeps commander's current help/usage behavior untouched.
 
