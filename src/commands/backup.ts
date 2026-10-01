@@ -8,7 +8,7 @@
  */
 import type { Command } from 'commander'
 
-import { dispatchHost, localOnly } from '../remote/dispatch'
+import { dispatchHost, localOnly, requireLocalHost } from '../remote/dispatch'
 import { backupCheck, backupInit, backupRestore } from '../service/backup'
 
 export function registerBackupCommands(program: Command): void {
@@ -25,6 +25,11 @@ export function registerBackupCommands(program: Command): void {
     )
     .option('--download', 'download the pinned litestream release if missing')
     .action(async (opts) => {
+      // spec/client-repl.md A2: `init` is a host command, and a host command
+      // that cannot name its database says so before it does anything else —
+      // otherwise `--download` fetches a binary on a machine that was never
+      // going to be able to use it. Same guard `localOnly()` applies.
+      requireLocalHost()
       if (opts.download) {
         const { downloadLitestream } = await import('../lib/litestream')
         process.stdout.write('downloading litestream…\n')

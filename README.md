@@ -75,8 +75,9 @@ Error: not connected — run 'crm login <server>' (get the server address from y
 So name a target: `crm login <host:port>` — the address comes from your admin
 console — or point at your own file with `--db <path>`, `CRM_DB`, or
 `[database] path` in your config. The commands that run where the database
-lives (`serve`, `backup`, `mount`, `export-fs`, `admin`) answer the same way
-until something names it:
+lives (`serve`, `backup`, `mount`, `export-fs`) answer the same way until
+something names it (`crm admin` is not one of them — it is RPC-only and needs
+a login):
 
 ```
 Error: server-host command — needs --db or a [database] path in your config
@@ -258,12 +259,15 @@ command fails with `Error: not connected …` instead of picking a file for you.
 - **The full order, first match wins:** `CRM_SERVER` + `CRM_TOKEN` →
   `--remote` / `[remote] server` in config → explicit local intent (`--db`
   always names a database; `--local` / `CRM_LOCAL=1` need one to point at)
-  → saved session → a `[database] path` you wrote into your own config.
+  → saved session → a `[database] path` you wrote into your own config — and a
+  `crm.toml` you checked into the repo you `cd` into counts as your own config
+  here, because you wrote the `path` into it.
 - **Nothing named a target → nothing runs.** No database path is ever
   invented and there is no silent local mode. A data command says
   `Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host`;
-  a host command (`serve`, `backup`, `mount`, `export-fs`, `admin`) says
+  a host command (`serve`, `backup`, `mount`, `export-fs`) says
   `Error: server-host command — needs --db or a [database] path in your config`.
+  (`crm admin` is neither: it is RPC-only and fails with `Not logged in …`.)
   Both exit 1.
 - The TLS choice made at login (`--insecure`) is stored with the session
   and reused afterwards — you never retype it.

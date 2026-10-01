@@ -80,6 +80,22 @@ function writeDatabaseConfig(home: string, dbPath: string): string {
   return cfg
 }
 
+/**
+ * A config that declares BOTH sides of the step-2/step-5 contest: a
+ * `[remote] server` (explicit opt-in, step 2) and a `[database] path`
+ * (declared local target, step 5). `insecure` matches the self-signed test
+ * server, the way `crm login --insecure` would have recorded it.
+ */
+function writeRemoteAndDatabaseConfig(home: string, dbPath: string): string {
+  const cfg = join(home, 'both.toml')
+  writeFileSync(
+    cfg,
+    `[remote]\nserver = "127.0.0.1:${srv?.port}"\ninsecure = true\n\n` +
+      `[database]\npath = "${dbPath}"\n`,
+  )
+  return cfg
+}
+
 /** Spawn the CLI with an isolated HOME; return { code, out, err }. */
 function run(
   home: string,
@@ -266,6 +282,44 @@ describe('mode contract: how a data command resolves its target', () => {
     expect(run(home, ['contact', 'list', '--db', db]).out).toContain(
       'ModeContractH',
     )
+  })
+
+  // Step 2: an explicitly opted-in server outranks a declared database — the
+  // write goes to the server and the declared file is never even opened.
+  // CRM_TOKEN alone (no CRM_SERVER) keeps this out of step 1, so the config's
+  // [remote] server is the only thing that can route the command.
+  test('[remote] server in config outranks a declared [database] path', async () => {
+    await setUp()
+    const home = mkdtempSync(join(tmpdir(), 'crm-mode-home-'))
+    const db = join(home, 'declared-but-not-used.db')
+    const cfg = writeRemoteAndDatabaseConfig(home, db)
+    const r = run(
+      home,
+      ['contact', 'add', 'ModeContractRemoteRank', '--email', 'mc@r.com'],
+      { CRM_CONFIG: cfg, CRM_TOKEN: token },
+    )
+    expect(r.code, r.out).toBe(0)
+    expect(serverContacts()).toContain('ModeContractRemoteRank')
+    // Local mode never won: the declared database is absent, not empty.
+    expect(r.err).not.toContain(LOCAL_MODE_NOTE)
+    expect(existsSync(db)).toBe(false)
+    expect(dbFilesUnder(home)).toEqual([])
+  })
+
+  // Step 2, negative branch: --remote is a switch, not a target. With no
+  // server in the env, the config, or a session there is nothing to dial, and
+  // the failure is the fixed copy at src/remote/dispatch.ts:101 (not exported,
+  // so it is asserted verbatim here).
+  test('--remote with no server anywhere prints the remote-address error', async () => {
+    await setUp()
+    const home = mkdtempSync(join(tmpdir(), 'crm-mode-home-'))
+    const r = run(home, ['--remote', 'contact', 'add', 'ModeContractNoAddr'])
+    expect(r.code).toBe(1)
+    expect(r.out).toContain(
+      'Error: remote mode needs a server address — set [remote] server in config or the CRM_SERVER env var',
+    )
+    expect(r.out).not.toContain(NOT_CONNECTED)
+    expect(dbFilesUnder(home)).toEqual([])
   })
 
   // Step 4 guard: the session may be used, not substituted.

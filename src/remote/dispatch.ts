@@ -59,6 +59,14 @@ export const NEEDS_DB =
 export const LOCAL_MODE_NOTE = 'note: local mode — you are logged in to'
 
 /**
+ * Fixed copy for a command that shells out on the database host while the
+ * invocation targets a remote server. Lives here next to the other two
+ * contract messages so `requireLocalHost()` and `localOnly()` cannot drift.
+ */
+export const SERVER_HOST_ONLY =
+  'Error: this command runs on the server host — SSH into the machine that owns the database and run it there'
+
+/**
  * `resolveEndpoint()` returns a remote endpoint, `null` for local mode, or
  * `'unresolved'` when nothing named a server *or* a database. Which fixed
  * error that last case becomes depends on the class of command asking — A1's
@@ -278,17 +286,30 @@ async function getLocalCtx() {
 }
 
 /**
+ * The two guards `localOnly()` applies before it runs anything: the invocation
+ * must not target a remote server, and the database must be nameable. A
+ * command that does work *before* handing over to `localOnly` — `crm backup
+ * init --download` fetches a binary — calls this first so a misconfigured host
+ * fails with the fixed copy instead of paying for the side effect (A2).
+ */
+export function requireLocalHost(): void {
+  if (isRemote()) {
+    die(SERVER_HOST_ONLY)
+  }
+  const config = loadConfig({ configPath: gConfig, dbPath: gDb, format: gFmt })
+  if (!config.database.path) {
+    die(NEEDS_DB)
+  }
+}
+
+/**
  * Run a method exclusively in local mode (no RPC surface). Errors get the
  * same treatment as `dispatch` (ServiceError → die with exit-code mapping).
  */
 export async function localOnly<T extends Record<string, unknown>>(
   fn: (db: DB, config: CRMConfig) => Promise<T>,
 ): Promise<T> {
-  if (isRemote()) {
-    die(
-      'Error: this command runs on the server host — SSH into the machine that owns the database and run it there',
-    )
-  }
+  requireLocalHost()
   const { db, config } = await getLocalCtx()
   try {
     return await fn(db, config)

@@ -14,7 +14,6 @@ import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { recordAudit, verifyChain } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
-import { die } from '../lib/helpers'
 import {
   configPathFor,
   type Destination,
@@ -35,10 +34,16 @@ type AuditEvent = (typeof AUDIT_ACTIONS)[number]
  * (`--db` / `CRM_DB` / a `[database] path`). There is no default to fall back
  * on, so an unconfigured host says so with the fixed server-host message
  * rather than deriving a litestream config for `undefined`.
+ *
+ * It throws rather than dying: this is the service layer, which runs inside
+ * `crm serve` too, where `process.exit` would kill the daemon for an RPC that
+ * merely hit a misconfigured server. The CLI path is unchanged — `localOnly()`
+ * catches `ServiceError` and dies with `e.message`, and `NEEDS_DB` already
+ * carries its own `Error: ` prefix, so the terminal shows the same line.
  */
 function requireDbPath(config: CRMConfig): string {
   if (!config.database.path) {
-    die(NEEDS_DB)
+    throw new ServiceError('INVALID', NEEDS_DB)
   }
   return config.database.path
 }

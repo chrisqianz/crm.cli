@@ -195,8 +195,8 @@ Resolution order, first match wins:
    Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host
    ```
 
-   A host command — `serve`, `backup`, `mount`, `export-fs`, `admin`, the
-   commands that run where the database lives — says:
+   A host command — `serve`, `backup`, `mount`, `export-fs`, the commands that
+   run where the database lives — says:
 
    ```
    Error: server-host command — needs --db or a [database] path in your config
@@ -204,7 +204,9 @@ Resolution order, first match wins:
 
 There is no implicit local mode and no database path is ever invented: the old
 `~/.crm/crm.db` default is gone from `loadConfig`, which is what makes a client
-install hold no business data (spec/client-repl.md §A). The login-time
+install hold no business data (spec/client-repl.md §A). `crm admin` is not a
+host command: it is RPC-only and reports "Not logged in. Run 'crm login' first"
+when there is no session, so `--db` never applies to it. The login-time
 `--insecure` choice is stored in the session and reused, so the flag is never
 retyped. `CRM_SERVER` set to a different server than the session is refused,
 never mixed. Whenever local mode wins while a session is live, a stderr note

@@ -41,12 +41,15 @@ logic, so RBAC, CAS, audit and the A-contract apply to it automatically.
 
 1. `CRM_SERVER` + `CRM_TOKEN` env pair → remote (unchanged)
 2. `--remote` / config `[remote] server` → remote (unchanged)
-3. saved session from `crm login` → remote (unchanged)
-4. **local iff** an explicit `--db` flag, **or** the user's own config file
-   declares `[database] path` (writing it into the file *is* the explicit
-   declaration; admin-distributed `crm.toml` contains only `[remote]`, so
-   clients are clean by construction)
-5. otherwise → **error, no fallback**:
+3. **explicit local intent** → local. An explicit `--db` names a database and
+   beats a saved session; `--local` / `CRM_LOCAL=1` are switches, not targets,
+   so they additionally need a nameable database (`--db`, `CRM_DB` or a config
+   `[database] path`) — with none of those they fail like step 5
+4. a saved session from `crm login` → remote (unchanged)
+5. with no session, **local iff** the user's own config file declares
+   `[database] path` (writing it into the file *is* the explicit declaration;
+   admin-distributed `crm.toml` contains only `[remote]`, so clients are clean
+   by construction). Otherwise → **error, no fallback**:
 
 ```
 Error: not connected — run 'crm login <server>' (get the server address from
@@ -55,10 +58,22 @@ your admin console), or use --local/--db for the server host
 
 Exit code 1. The message is fixed copy and is asserted by tests.
 
+Which fixed copy a failure takes follows the class of the command that asked:
+a **data command** with no target — including a failed explicit `--local` with
+nothing to point at — gets this `NOT_CONNECTED`; a **host command** that cannot
+name a database gets the `NEEDS_DB` copy from A2. Both exit 1.
+
+- **A project-discovered `crm.toml` counts as "the user's own config", by
+  decision.** `loadConfig` finds the nearest `crm.toml` by walking up from the
+  cwd, so a `[database] path` checked into a repo enables local mode inside it
+  (`loadConfig` strips `[auth]`/`[ldap]`/hooks from such an untrusted config,
+  never `[database]`). A `crm.toml` you cd into is a database declaration
+  someone authored; the zero-footprint claim covers paths `crm` *invents*, and
+  nothing is invented here. Pinned by `test/zero-footprint.test.ts`.
 - `--local` / `CRM_LOCAL=1` remain override switches for "logged in but
   target local"; they can no longer conjure local mode by themselves.
-  With neither `--db` nor a config `[database] path` they fail with the
-  same error (a local target must be nameable).
+  With neither `--db`, `CRM_DB` nor a config `[database] path` they fail with
+  the same error (a local target must be nameable).
 - The implicit default database path (`~/.crm/crm.db`) is removed from
   `loadConfig` defaults. Config resolution: explicit `--db` > config
   `[database] path` > *unset*. Code that needs a db must handle unset.
@@ -67,8 +82,10 @@ Exit code 1. The message is fixed copy and is asserted by tests.
 
 - **Data commands** (contact/deal/task/company/log/search/report/dupes/…):
   rule above via `dispatch()`.
-- **Host commands** (`serve`, `admin`, `backup`, `mount`, `unmount`,
-  `export-fs`): run where the database lives. They resolve a db path by
+- **Host commands** (`serve`, `backup`, `mount`, `unmount`, `export-fs`): run
+  where the database lives. `crm admin` is **not** one of them — it is RPC-only
+  and reports "Not logged in. Run 'crm login' first" without a session, so it
+  never takes this error. They resolve a db path by
   `--db` > config `[database] path`; when unresolvable they fail:
   `Error: server-host command — needs --db or a [database] path in your
   config` (exit 1).

@@ -83,7 +83,7 @@ Two failures you will see, both **exit 1** (fixed copy, match on the prefix):
 | Error | Means | Do |
 |---|---|---|
 | `Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host` | No server configured and no database named | Ask the human for the server address (or have them log in), or pass `--db <path>` |
-| `Error: server-host command — needs --db or a [database] path in your config` | `serve` / `backup` / `mount` / `export-fs` / `admin` run where the database lives and nothing named it | Re-run on the database host with `--db <path>` |
+| `Error: server-host command — needs --db or a [database] path in your config` | `serve` / `backup` / `mount` / `export-fs` run where the database lives and nothing named it (`admin` is **not** one of these — it is RPC-only, so `--db` never helps; it needs a login) | Re-run on the database host with `--db <path>` |
 
 A remote command is byte-identical to the local one — the same service layer runs on the server. In remote mode no local database is opened: a client machine holds no CRM records (what it does hold is `~/.crm/credentials` — a 0600 token — plus whatever config you put there).
 
