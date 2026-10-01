@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 
 import { Command } from 'commander'
@@ -104,7 +105,9 @@ async function main(): Promise<void> {
     cleanArgv.length === 0 &&
     (process.stdin.isTTY || process.env.CRM_REPL_FORCE === '1')
   ) {
-    await runRepl(program)
+    // The raw slice, not cleanArgv: `status` reports where the data comes
+    // from, and cleanArgv has already eaten the `--db <path>` that says so.
+    await runRepl(program, undefined, process.argv.slice(2))
     return
   }
 
@@ -143,7 +146,10 @@ function isCliEntrypoint(): boolean {
     return false
   }
   try {
-    return pathToFileURL(entry).href === import.meta.url
+    // Node resolves the main module through symlinks by default, so
+    // import.meta.url is the realpath while argv[1] is the path as typed
+    // (bin/crm → dist/cli.js). Compare like like.
+    return pathToFileURL(realpathSync(entry)).href === import.meta.url
   } catch {
     return false
   }

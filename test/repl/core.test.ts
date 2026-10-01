@@ -6,16 +6,25 @@
  * loop that survives a command calling die() → process.exit(1).
  */
 
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtempSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PassThrough } from 'node:stream'
 
 import { Command } from 'commander'
 
 import { buildProgram } from '../../src/cli'
-import type { ReplContext } from '../../src/repl/repl'
-import { handleLine, statusLine, tokenize } from '../../src/repl/repl'
+import type { ReplContext, ReplIo } from '../../src/repl/repl'
+import { handleLine, runRepl, statusLine, tokenize } from '../../src/repl/repl'
+import {
+  bootstrapOwner,
+  CRM as CRM_BIN,
+  freshDb as entFreshDb,
+  startServer,
+  type TestServer,
+} from '../enterprise/helpers'
+import { leaked } from '../helpers'
 
 interface ReplRun {
   code: number
@@ -119,9 +128,11 @@ describe('REPL session words', () => {
     expect(r.code).toBe(0)
   }, 30_000)
 
-  test('status reads the --db=value form too', () => {
+  test('status reads the separated --db past other entry flags', () => {
     // Pure: the --db branch decides before anything touches session state.
-    expect(statusLine(ctx(['--db=mine.db']))).toBe('local:mine.db')
+    // `--db=x.db` is deliberately NOT a supported form — the argv pre-parser
+    // strips only the separated form, so `crm --db=x.db` never reaches the
+    // REPL at all (commander rejects it as an unknown option).
     expect(statusLine(ctx(['--verbose', '--db', 'other.db']))).toBe(
       'local:other.db',
     )
@@ -149,6 +160,14 @@ describe('REPL session words', () => {
     expect(r.code).toBe(0)
   }, 30_000)
 })
+
+test('whoami reaches the command layer', async () => {
+  const r = await repl(['whoami', 'q'])
+  // Not a session word: it goes through argv, hits the real whoami action,
+  // dies "not logged in", and the loop still exits 0 on q.
+  expect(r.err + r.out).toContain('Not logged in')
+  expect(r.code).toBe(0)
+}, 30_000)
 
 describe('handleLine (Task 1 grammar)', () => {
   test('empty and whitespace-only lines are no-ops', async () => {
@@ -205,6 +224,18 @@ describe('handleLine (Task 1 grammar)', () => {
       argv: ['contact', 'add', 'Ada Lovelace'],
     })
   })
+
+  test('an unterminated quote is refused, not silently absorbed', async () => {
+    // The likeliest REPL typo. Swallowing the quote would run a command the
+    // user never typed; refusing the line costs one clear error.
+    expect(tokenize('a "b')).toEqual(['a', 'b']) // pure splitter stays dumb
+    await expect(handleLine('contact add "Ada', ctx())).rejects.toThrow(
+      /unmatched "/,
+    )
+    await expect(handleLine('contact add "', ctx())).rejects.toThrow(
+      /unmatched "/,
+    )
+  })
 })
 
 describe('cli entry surface', () => {
@@ -214,4 +245,136 @@ describe('cli entry surface', () => {
     expect(program.name()).toBe('crm')
     expect(program.commands.length).toBeGreaterThan(10)
   })
+})
+
+test('a REPL session leaves no crm/db artifact in HOME', async () => {
+  // The zero-footprint walker (test/helpers.ts) from a REPL surface: several
+  // commands, one failing line, one session word — and the isolated HOME
+  // still holds nothing crm-shaped. This is the pin for "history is
+  // in-memory only, no history file, ever": a readline history file would
+  // be crm-named and cannot survive this walk.
+  const r = await repl(
+    [
+      'contact add Ada --email ada@x.io',
+      'contact show nope',
+      'contact list',
+      'status',
+      'q',
+    ],
+    ['--db', freshDb()],
+  )
+  expect(r.code).toBe(0)
+  expect(leaked(r.home)).toEqual([])
+}, 30_000)
+
+describe('runRepl with injected io', () => {
+  test('entry argv decides the status line; a failed line keeps the loop', async () => {
+    const input = new PassThrough()
+    const output = new PassThrough()
+    const io = {
+      input: input as unknown as NodeJS.ReadableStream & { isTTY?: boolean },
+      output,
+    } satisfies ReplIo
+    let text = ''
+    output.on('data', (c: Buffer) => {
+      text += c.toString()
+    })
+    // The entry argv arrives as a parameter — process.argv is untouched, so
+    // this runs inside the test process without lying about its argv.
+    const done = runRepl(new Command(), io, ['--db', 'mine.db'])
+    input.write('status\ncontact\nq\n') // bare `contact` errors: no subcommand
+    input.end()
+    await done
+    expect(text).toContain('local:mine.db')
+    // initial prompt + one after each handled line — the failure did not
+    // end the session early.
+    expect((text.match(/crm>/g) ?? []).length).toBeGreaterThanOrEqual(3)
+  }, 30_000)
+})
+
+describe('REPL at a real terminal (pty)', () => {
+  const db = entFreshDb()
+  let server: TestServer | null = null
+
+  afterAll(async () => {
+    await server?.close()
+    db.cleanup()
+  })
+
+  test('login prompts own the terminal; the password never becomes a REPL line', async () => {
+    // The REPL's readline sits on the same stdin the command layer's prompts
+    // attach to. If the loop keeps listening during a command, bytes split
+    // between two readers: the login stalls, or worse — the typed password
+    // resurfaces as an executed REPL line. Same pty harness as
+    // test/enterprise/login-tty.test.ts.
+    server = await startServer(db.dbPath)
+    const owner = await bootstrapOwner(server)
+    let screen = ''
+    const decode = new TextDecoder()
+    const term = new Bun.Terminal({
+      cols: 100,
+      rows: 30,
+      data: (_t: Bun.Terminal, chunk: Uint8Array) => {
+        screen += decode.decode(chunk, { stream: true })
+      },
+    })
+    const home = mkdtempSync(join(tmpdir(), 'crm-repl-pty-'))
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HOME: home,
+      CRM_CONFIG: '',
+      NODE_EXTRA_CA_CERTS: join(homedir(), '.crm', 'certs', 'server.crt'),
+    }
+    for (const k of ['CRM_DB', 'CRM_SERVER', 'CRM_TOKEN', 'CRM_REPL_FORCE']) {
+      delete env[k]
+    }
+    // No --db: this REPL is the pure remote path — login saves a session and
+    // `status` must show it. With --db in the entry argv, status would name
+    // the local file instead and the session half of the line goes untested.
+    const proc = Bun.spawn(['bun', 'run', CRM_BIN], {
+      cwd: join(import.meta.dir, '..', '..'),
+      terminal: term,
+      env: env as NodeJS.ProcessEnv,
+    })
+    const settled = async (what: () => boolean, ms: number) => {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        if (what()) {
+          return true
+        }
+        await Bun.sleep(100)
+      }
+      return what()
+    }
+    try {
+      expect(await settled(() => screen.includes('crm>'), 15_000)).toBe(true)
+      term.write(
+        `login --server 127.0.0.1:${server.port} --username ${owner.username}\n`,
+      )
+      expect(await settled(() => /password/i.test(screen), 15_000)).toBe(true)
+      term.write(`${owner.password}\n`)
+      expect(await settled(() => screen.includes('Logged in as'), 20_000)).toBe(
+        true,
+      )
+      term.write('status\n')
+      expect(await settled(() => screen.includes('✓'), 15_000)).toBe(true)
+      expect(screen).toContain(`@127.0.0.1:${server.port}`)
+      // A split-brain stdin shows itself exactly here: the password echoed
+      // (promptSecret turns echo off) or echoed back as a failed command.
+      expect(screen).not.toContain(owner.password)
+      expect(screen.toLowerCase()).not.toContain('unknown command')
+      term.write('q\n')
+      const exited = await Promise.race([
+        proc.exited.then((c) => c),
+        Bun.sleep(15_000).then(() => -1),
+      ])
+      expect(exited).toBe(0)
+    } finally {
+      try {
+        proc.kill(9)
+      } catch {
+        // already gone
+      }
+    }
+  }, 90_000)
 })

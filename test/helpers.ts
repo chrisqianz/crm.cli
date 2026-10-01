@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -6,6 +12,37 @@ import { join } from 'node:path'
 export const canMount = existsSync('/dev/fuse') // Linux FUSE only — macOS NFS mount causes kernel panics, skip for now
 
 const CRM_BIN = join(import.meta.dir, '..', 'src', 'cli.ts')
+
+/** Every path under `dir` that looks like crm state; bun's own cache is
+ * excluded because it is the runtime, not the product.
+ *
+ * Scope of the promise: the A3 whitelist allows `~/.crm/config.toml` (plus the
+ * `~/.crm` runtime dir: credentials, sockets, bin) and the caches by
+ * construction, so `~/.crm` itself is deliberately outside this walk — which is
+ * why the spec's literal `find $HOME -name '*crm*'` can never be the assertion.
+ * What this walk enforces is the enforceable subset: no *crm/db-named* artifact
+ * appears anywhere under $HOME that the run did not address explicitly.
+ */
+export function leaked(dir: string): string[] {
+  const out: string[] = []
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name)
+      if (p.includes('/Library/Caches')) {
+        continue
+      }
+      if (e.isDirectory() && !e.isSymbolicLink()) {
+        walk(p)
+      } else if (/crm|\.db/i.test(e.name)) {
+        out.push(p)
+      }
+    }
+  }
+  if (statSync(dir, { throwIfNoEntry: false })) {
+    walk(dir)
+  }
+  return out
+}
 
 const TEST_CONFIG = `[phone]
 default_country = "US"

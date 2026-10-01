@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 
 import { createClient } from '@libsql/client'
 import { sql } from 'drizzle-orm'
@@ -148,7 +148,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `
 
-export async function openDB(dbPath: string): Promise<DB> {
+/**
+ * One handle per resolved path, process-wide.
+ *
+ * A REPL is one process running many commands, and each command asks for the
+ * database by name. Handing out a fresh libSQL client per request would leak
+ * a client per line and re-run the whole schema bootstrap per line — the same
+ * one-process-many-parses hazard class as commander's shared collecting
+ * flags. Memoizing the *promise* also collapses concurrent first opens (the
+ * daemon's parallel handlers) into one bootstrap. A failed open is evicted so
+ * a retry sees a fresh attempt; one-shot mode opens exactly one db per
+ * process and is untouched.
+ */
+const openDbs = new Map<string, Promise<DB>>()
+
+export function openDB(dbPath: string): Promise<DB> {
+  const key = resolve(dbPath)
+  let opened = openDbs.get(key)
+  if (!opened) {
+    opened = openDbFresh(key)
+    opened.catch(() => openDbs.delete(key))
+    openDbs.set(key, opened)
+  }
+  return opened
+}
+
+async function openDbFresh(dbPath: string): Promise<DB> {
   mkdirSync(dirname(dbPath), { recursive: true })
   const client = createClient({ url: `file:${dbPath}` })
 
