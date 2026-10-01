@@ -650,17 +650,20 @@ export async function handleCommand(
     )
   }
   // P9: `caller` is the authenticated username, injected for every method
-  // so read services can implement `--mine` filters. Both `actor` and
-  // `caller` are server-owned: any caller-supplied values are stripped so a
-  // client cannot impersonate another user (the server re-injects its own,
-  // last, so it always wins). `actor` stays write-only threading metadata;
-  // `caller` is the extra identity read services may use as a filter.
-  const { actor: _actor, caller: _caller, ...restParams } = params
-  const actorParams = {
-    ...restParams,
-    caller: identity.username,
-    ...(def.write ? { actor: identity.username } : {}),
-  }
+  // so read services can implement `--mine` filters. It is always
+  // server-owned: a caller-supplied value is overwritten. `actor` is
+  // server-owned only for WRITE methods, where it is audit attribution and
+  // must not be forgeable. On READ methods `actor` is a legitimate user
+  // filter (`crm audit list --actor <user>`), so it passes through from
+  // the client untouched.
+  const { caller: _caller, actor: _actor, ...restParams } = params
+  const actorParams = def.write
+    ? { ...restParams, actor: identity.username, caller: identity.username }
+    : {
+        ...restParams,
+        ...(params.actor === undefined ? {} : { actor: params.actor }),
+        caller: identity.username,
+      }
   const before = def.write
     ? await auditSnapshot(db, config, method, actorParams, null)
     : null

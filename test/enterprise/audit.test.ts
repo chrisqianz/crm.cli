@@ -528,4 +528,121 @@ describe('P4 audit: remote command access', () => {
       }
     })
   }, 90_000)
+
+  // Regression (P9 review): handleCommand strips client `actor` for writes,
+  // but on READ methods actor is a legitimate filter (audit list --actor).
+  // Dropping it there silently returns the whole log for every actor.
+  test('remote audit list --actor filters by actor', async () => {
+    await withServer(async (server, ownerToken) => {
+      const admin = await connect(server.port, ownerToken)
+      let linToken = ''
+      try {
+        await admin.call('admin.user.create', {
+          username: 'filter.lin',
+          role: 'writer',
+        })
+        const created = await admin.call<{ token: string }>(
+          'admin.token.create',
+          { name: 'filter-lin-token', username: 'filter.lin' },
+        )
+        linToken = created.token
+      } finally {
+        admin.close()
+      }
+      remoteRun(server, ownerToken, [
+        'contact',
+        'add',
+        '--name',
+        'ByAdmin',
+        '--email',
+        'ba@p4.test',
+      ])
+      remoteRun(server, linToken, [
+        'contact',
+        'add',
+        '--name',
+        'ByLin',
+        '--email',
+        'bl@p4.test',
+      ])
+
+      interface Row {
+        action: string
+        actor_name: string
+      }
+      const linOut = remoteRun(server, ownerToken, [
+        'audit',
+        'list',
+        '--actor',
+        'filter.lin',
+        '--format',
+        'json',
+      ])
+      expect(linOut.exitCode, linOut.stderr).toBe(0)
+      const linRows = JSON.parse(linOut.stdout) as Row[]
+      expect(linRows.length).toBeGreaterThan(0)
+      expect(linRows.every((r) => r.actor_name === 'filter.lin')).toBe(true)
+
+      const adminOut = remoteRun(server, ownerToken, [
+        'audit',
+        'list',
+        '--actor',
+        'admin',
+        '--action',
+        'contact.add',
+        '--format',
+        'json',
+      ])
+      expect(adminOut.exitCode, adminOut.stderr).toBe(0)
+      const adminRows = JSON.parse(adminOut.stdout) as Row[]
+      expect(adminRows.length).toBeGreaterThan(0)
+      expect(adminRows.every((r) => r.actor_name === 'admin')).toBe(true)
+    })
+  }, 90_000)
+
+  test('a forged actor param cannot misattribute a remote write', async () => {
+    await withServer(async (server, ownerToken) => {
+      const client = await connect(server.port, ownerToken)
+      try {
+        await client.call('contact.add', {
+          name: 'Forged',
+          email: ['forged@p4.test'],
+          actor: 'mallory',
+        })
+      } finally {
+        client.close()
+      }
+      // The write must be attributed to the authenticated caller, never to
+      // the client-supplied actor — and the (now working) --actor filter
+      // proves it: mallory owns no rows, admin owns the add.
+      const forgedOut = remoteRun(server, ownerToken, [
+        'audit',
+        'list',
+        '--actor',
+        'mallory',
+        '--format',
+        'json',
+      ])
+      expect(forgedOut.exitCode, forgedOut.stderr).toBe(0)
+      expect((JSON.parse(forgedOut.stdout) as unknown[]).length).toBe(0)
+
+      const realOut = remoteRun(server, ownerToken, [
+        'audit',
+        'list',
+        '--actor',
+        'admin',
+        '--action',
+        'contact.add',
+        '--format',
+        'json',
+      ])
+      expect(realOut.exitCode, realOut.stderr).toBe(0)
+      const realRows = JSON.parse(realOut.stdout) as Array<{
+        after_json: string | null
+      }>
+      expect(
+        realRows.some((r) => String(r.after_json).includes('Forged')),
+      ).toBe(true)
+    })
+  }, 90_000)
 })

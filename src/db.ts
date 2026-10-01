@@ -215,24 +215,30 @@ async function busyExec(
 async function migrateSchema(
   client: ReturnType<typeof createClient>,
 ): Promise<void> {
-  // Fast path: no data anywhere → freshly created database (SCHEMA_SQL
-  // above already has every column) → skip the exclusive-lock ALTER pass
-  // so parallel first-writes don't queue behind a checkpoint.
-  let hasData = false
-  for (const table of [
-    'contacts',
-    'companies',
-    'deals',
-    'audit_log',
-    'users',
-  ]) {
-    const r = await client.execute(`SELECT 1 FROM ${table} LIMIT 1`)
-    if (r.rows.length > 0) {
-      hasData = true
+  // Fast path: skip the exclusive-lock ALTER pass only when the schema
+  // ALREADY has every current column (a fresh database — SCHEMA_SQL above
+  // created them). Emptiness is not evidence of schema shape: a pre-change
+  // database whose tables happen to be empty still needs the ALTERs (an
+  // empty old db skipping here once crashed the first write on the missing
+  // `owner` column). The probes are read-only `LIMIT 0` selects — parsing
+  // resolves the column names, execution touches no rows. The ALTER pass
+  // is idempotent, so any failed probe simply lets it run.
+  const probes: readonly string[] = [
+    'SELECT owner, addresses, version, updated_by FROM contacts LIMIT 0',
+    'SELECT owner, version, updated_by FROM deals LIMIT 0',
+    'SELECT version, updated_by FROM companies LIMIT 0',
+    'SELECT prev_hash, row_hash FROM audit_log LIMIT 0',
+  ]
+  let current = true
+  for (const probe of probes) {
+    try {
+      await client.execute(probe)
+    } catch {
+      current = false
       break
     }
   }
-  if (!hasData) {
+  if (current) {
     return
   }
   const migrations: readonly [string, string, string][] = [

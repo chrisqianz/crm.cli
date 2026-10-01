@@ -10,7 +10,7 @@ import { dispatch, renderCtx } from '../remote/dispatch'
  *
  *   crm task add 'Call Acme re: renewal' --due 2026-07-01 \
  *       --contact 'Acme' --owner lin
- *   crm task list --today
+ *   crm task list --due-today
  *   crm task list --overdue --mine
  *   crm task done 'Call Acme re: renewal'
  *   crm task rm 'Call Acme re: renewal'

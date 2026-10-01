@@ -21,7 +21,7 @@ describe('tasks: follow-up to-dos', () => {
       'lin',
     )
     expect(id).toMatch(/^tk_/)
-    const detail = runJSON(
+    const detail = runJSON<Record<string, unknown>>(
       'task',
       'show',
       '--format',
@@ -39,7 +39,13 @@ describe('tasks: follow-up to-dos', () => {
     runOK('contact', 'add', 'Acme', '--email', 'acme@x.com')
     runOK('deal', 'add', 'Renewal', '--stage', 'qualified')
     runOK('task', 'add', 'Follow up', '--contact', 'Acme', '--deal', 'Renewal')
-    const detail = runJSON('task', 'show', '--format', 'json', 'Follow up')
+    const detail = runJSON<Record<string, unknown>>(
+      'task',
+      'show',
+      '--format',
+      'json',
+      'Follow up',
+    )
     expect((detail.contact as Record<string, unknown>).name).toBe('Acme')
     expect((detail.deal as Record<string, unknown>).title).toBe('Renewal')
   })

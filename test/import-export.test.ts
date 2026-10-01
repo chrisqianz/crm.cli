@@ -216,6 +216,7 @@ describe('export', () => {
     ctx.runOK('contact', 'add', '--name', 'Jane', '--email', 'jane@acme.com')
     ctx.runOK('company', 'add', '--name', 'Acme')
     ctx.runOK('deal', 'add', '--title', 'Deal')
+    ctx.runOK('task', 'add', 'Exported follow-up')
 
     const exported = ctx.runJSON<Record<string, unknown>>(
       'export',
@@ -227,6 +228,11 @@ describe('export', () => {
     expect(exported).toHaveProperty('companies')
     expect(exported).toHaveProperty('deals')
     expect(exported).toHaveProperty('activities')
+    // P9: tasks are part of the dataset — an export that omits them
+    // silently loses follow-ups.
+    expect(exported).toHaveProperty('tasks')
+    const tasks = exported.tasks as Record<string, unknown>[]
+    expect(tasks.map((t) => t.title)).toContain('Exported follow-up')
   })
 })
 

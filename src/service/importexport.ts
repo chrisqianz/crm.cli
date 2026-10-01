@@ -16,6 +16,7 @@ import {
   contactToRow,
   dealToRow,
   safeJSON,
+  taskToRow,
 } from '../format'
 import { ServiceError } from '../lib/errors'
 import {
@@ -413,6 +414,7 @@ export async function exportAll(
     companies: Record<string, unknown>[]
     deals: Record<string, unknown>[]
     activities: Record<string, unknown>[]
+    tasks: Record<string, unknown>[]
   }
 }> {
   return {
@@ -427,6 +429,7 @@ export async function exportAll(
       activities: (await db.select().from(schema.activities)).map((a) =>
         activityToRow(a),
       ),
+      tasks: (await db.select().from(schema.tasks)).map((t) => taskToRow(t)),
     },
   }
 }

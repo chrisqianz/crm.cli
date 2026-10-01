@@ -21,7 +21,7 @@ import {
  * asking. A prefix of another name is NOT a match.
  */
 function nameCandidates<T extends { id: string }>(
-  kind: 'contact' | 'company' | 'deal',
+  kind: 'contact' | 'company' | 'deal' | 'task',
   rows: T[],
   ref: string,
   getName: (row: T) => string,
@@ -44,7 +44,11 @@ function nameCandidates<T extends { id: string }>(
       )
     throw new ServiceError(
       'CONFLICT',
-      `Error: multiple ${plural} match "${ref}":\n${lines.join('\n')}\nUse the id (or email) to disambiguate`,
+      `Error: multiple ${plural} match "${ref}":\n${lines.join('\n')}\n${
+        kind === 'contact'
+          ? 'Use the id (or email) to disambiguate'
+          : 'Use the id to disambiguate'
+      }`,
     )
   }
   return null
