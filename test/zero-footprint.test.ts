@@ -6,9 +6,11 @@
  * contract.
  */
 import { describe, expect, test } from 'bun:test'
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+import { NEEDS_DB } from '../src/remote/dispatch'
 
 function cli(home: string, args: string[]) {
   const env: Record<string, string> = {
@@ -47,19 +49,29 @@ describe('zero footprint: host commands', () => {
       '1',
     ])
     expect(r.code).toBe(1)
-    expect(r.out).toContain('server-host command — needs --db')
+    expect(r.out).toContain(NEEDS_DB)
   })
 
   test('crm backup status without any db path fails with NEEDS_DB', () => {
     const r = cli(mkdtempSync(join(tmpdir(), 'crm-zf-')), ['backup', 'status'])
     expect(r.code).toBe(1)
-    expect(r.out).toContain('server-host command — needs --db')
+    expect(r.out).toContain(NEEDS_DB)
   })
 
   test('crm export-fs without any db path fails with NEEDS_DB', () => {
     const out = mkdtempSync(join(tmpdir(), 'crm-zf-'))
     const r = cli(out, ['export-fs', join(out, 'tree')])
     expect(r.code).toBe(1)
-    expect(r.out).toContain('server-host command — needs --db')
+    expect(r.out).toContain(NEEDS_DB)
+  })
+
+  test('crm mount without any db path fails before touching the mountpoint', () => {
+    const home = mkdtempSync(join(tmpdir(), 'crm-zf-'))
+    const mp = mkdtempSync(join(tmpdir(), 'crm-zf-mp-'))
+    const r = cli(home, ['mount', mp])
+    expect(r.code).toBe(1)
+    expect(r.out).toContain(NEEDS_DB)
+    // the guard fires ahead of the helper compile / mkdir / spawn work
+    expect(readdirSync(mp)).toEqual([])
   })
 })

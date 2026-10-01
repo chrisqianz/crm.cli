@@ -7,7 +7,13 @@
  * database again.
  */
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -70,6 +76,23 @@ function run(
   }
 }
 
+/**
+ * Every `*.db` under `dir`, recursively. A zero-footprint assertion wants
+ * "no database appeared anywhere", not just "not at the usual path".
+ */
+function dbFilesUnder(dir: string): string[] {
+  const found: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      found.push(...dbFilesUnder(p))
+    } else if (entry.name.endsWith('.db')) {
+      found.push(p)
+    }
+  }
+  return found
+}
+
 /** Authoritative server-side contact list (agent pattern). */
 function serverContacts(): string[] {
   const home = mkdtempSync(join(tmpdir(), 'crm-mode-srv-'))
@@ -100,18 +123,16 @@ describe('mode contract: a saved session implies remote', () => {
     expect(local.out).not.toContain('ModeContractA')
   })
 
-  test('--local is an explicit local choice and says so', async () => {
+  // interim contract — rewritten in Task 3 (spec/client-repl.md A1)
+  test('--local without a db path fails and invents nothing', async () => {
     await setUp()
     const home = homeWithSession()
     const r = run(home, ['contact', 'add', 'ModeContractB', '--local'])
-    expect(r.code).toBe(0)
-    expect(r.out).toContain('local')
-    expect(serverContacts()).not.toContain('ModeContractB')
-    expect(run(home, ['contact', 'list', '--local']).out).toContain(
-      'ModeContractB',
-    )
-    // the default (no --local) still targets the server
-    expect(run(home, ['contact', 'list']).out).not.toContain('ModeContractB')
+    expect(r.code).toBe(1)
+    // short substring on purpose: the final copy is Task 3's NOT_CONNECTED
+    expect(r.out).toMatch(/crm login|needs --db/)
+    expect(existsSync(join(home, '.crm', 'crm.db'))).toBe(false)
+    expect(dbFilesUnder(home)).toEqual([])
   })
 
   test('an explicit --db beats the session', async () => {
@@ -126,15 +147,16 @@ describe('mode contract: a saved session implies remote', () => {
     )
   })
 
-  test('CRM_LOCAL=1 is an explicit local choice', async () => {
+  // interim contract — rewritten in Task 3 (spec/client-repl.md A1)
+  test('CRM_LOCAL=1 without a db path fails and invents nothing', async () => {
     await setUp()
     const home = homeWithSession()
     const r = run(home, ['contact', 'add', 'ModeContractD'], { CRM_LOCAL: '1' })
-    expect(r.code).toBe(0)
-    expect(serverContacts()).not.toContain('ModeContractD')
-    expect(run(home, ['contact', 'list', '--local']).out).toContain(
-      'ModeContractD',
-    )
+    expect(r.code).toBe(1)
+    // short substring on purpose: the final copy is Task 3's NOT_CONNECTED
+    expect(r.out).toMatch(/crm login|needs --db/)
+    expect(existsSync(join(home, '.crm', 'crm.db'))).toBe(false)
+    expect(dbFilesUnder(home)).toEqual([])
   })
 
   test('CRM_SERVER pointing at another server is refused, not mixed', async () => {

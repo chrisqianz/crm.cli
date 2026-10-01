@@ -60,7 +60,7 @@ export async function getCtx() {
   }
   const db = await openDB(dbPath)
   return {
-    config: { ...config, database: { path: dbPath } },
+    config: { ...config, database: { ...config.database, path: dbPath } },
     db,
     fmt: config.defaults.format,
   }

@@ -749,15 +749,45 @@ describe('config: malformed TOML warning', () => {
 })
 
 describe('database path is never invented', () => {
-  test('no config file → database.path is undefined', () => {
+  /**
+   * loadConfig reads CRM_DB / CRM_CONFIG off the ambient environment, so an
+   * inherited value would decide the outcome here instead of the code under
+   * test. Both are removed for the duration of each call and put back after.
+   * (Reflect.deleteProperty is plain `delete` under a lint-friendly name.)
+   */
+  function withoutDbEnv<T>(fn: () => T): T {
+    const saved = new Map<string, string | undefined>()
+    for (const key of ['CRM_DB', 'CRM_CONFIG']) {
+      saved.set(key, process.env[key])
+      Reflect.deleteProperty(process.env, key)
+    }
+    try {
+      return fn()
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) {
+          Reflect.deleteProperty(process.env, key)
+        } else {
+          process.env[key] = value
+        }
+      }
+    }
+  }
+
+  test('config file with no [database] → path is undefined', () => {
     const home = mkdtempSync(join(tmpdir(), 'crm-cfg-'))
-    const cfg = loadConfig({ configPath: join(home, 'absent.toml') })
+    // An empty (valid) config: a *missing* section is the fact under test, so
+    // there must be no parse warning mixed into the observation.
+    const p = join(home, 'crm.toml')
+    writeFileSync(p, '')
+    const cfg = withoutDbEnv(() => loadConfig({ configPath: p }))
     expect(cfg.database.path).toBeUndefined()
   })
   test('[database] path in config still resolves', () => {
     const home = mkdtempSync(join(tmpdir(), 'crm-cfg-'))
     const p = join(home, 'crm.toml')
     writeFileSync(p, '[database]\npath = "/srv/crm.db"\n')
-    expect(loadConfig({ configPath: p }).database.path).toBe('/srv/crm.db')
+    const cfg = withoutDbEnv(() => loadConfig({ configPath: p }))
+    expect(cfg.database.path).toBe('/srv/crm.db')
   })
 })
