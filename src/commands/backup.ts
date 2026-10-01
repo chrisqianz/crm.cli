@@ -8,7 +8,7 @@
  */
 import type { Command } from 'commander'
 
-import { dispatch, localOnly } from '../remote/dispatch'
+import { dispatchHost, localOnly } from '../remote/dispatch'
 import { backupCheck, backupInit, backupRestore } from '../service/backup'
 
 export function registerBackupCommands(program: Command): void {
@@ -42,7 +42,7 @@ export function registerBackupCommands(program: Command): void {
     .command('sync')
     .description('run one replication pass')
     .action(async () => {
-      await dispatch('backup.sync', {})
+      await dispatchHost('backup.sync', {})
       process.stdout.write('backup sync complete\n')
     })
 
@@ -51,7 +51,7 @@ export function registerBackupCommands(program: Command): void {
     .description('show replication status')
     .option('--json', 'output raw JSON')
     .action(async (opts) => {
-      const out = await dispatch<{
+      const out = await dispatchHost<{
         databases: Record<string, unknown>[]
       }>('backup.status', {})
       if (opts.json) {

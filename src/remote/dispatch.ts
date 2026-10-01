@@ -1,10 +1,16 @@
 /**
- * Remote mode is enabled when any of:
- *  1. CRM_SERVER + CRM_TOKEN env are both set (agent/service pattern)
- *  2. --remote flag or [remote] server in config (explicit opt-in)
- *  3. a saved session from `crm login` (mode contract: logged-in clients
- *     target their server by default; local is an explicit opt-out via
- *     --local, CRM_LOCAL=1, or an explicit --db)
+ * Mode contract (spec/client-repl.md A1) — how `remoteEndpoint()` resolves:
+ *  1. CRM_SERVER + CRM_TOKEN env are both set → remote (agent/service pattern)
+ *  2. --remote flag or [remote] server in config → remote (explicit opt-in)
+ *  3. explicit local intent → local: --db always names a database and beats a
+ *     saved session; --local / CRM_LOCAL=1 are an opt-out that additionally
+ *     needs a nameable database (from --db, CRM_DB or config [database])
+ *  4. a saved session from `crm login` → remote; otherwise a [database] path
+ *     the user wrote into their own config → local
+ *  5. nothing named a target → fail. There is no implicit local mode and no
+ *     database path is ever invented: a data command says NOT_CONNECTED
+ *     (`remoteEndpoint`), a host command says NEEDS_DB (`localOnly`,
+ *     `dispatchHost`) — spec/client-repl.md A1/A2.
  *
  * In remote mode no local database is ever opened: the CLI renders the
  * server's response locally.
@@ -43,8 +49,22 @@ export const NOT_CONNECTED =
 export const NEEDS_DB =
   'Error: server-host command — needs --db or a [database] path in your config'
 
-/** Resolve the remote endpoint, or null for local mode. */
-export function remoteEndpoint(): RemoteEndpoint | null {
+/**
+ * `resolveEndpoint()` returns a remote endpoint, `null` for local mode, or
+ * `'unresolved'` when nothing named a server *or* a database. Which fixed
+ * error that last case becomes depends on the class of command asking — A1's
+ * NOT_CONNECTED for a data command, A2's NEEDS_DB for a host command — so the
+ * error stays in the callers and the resolution order stays in one place.
+ */
+type Resolution = RemoteEndpoint | 'unresolved' | null
+
+/**
+ * The resolution order from the header, shared by `remoteEndpoint` (data
+ * commands), `dispatchHost` (dual-mode host commands), `isRemote` and
+ * therefore `localOnly`. May die on an inconsistency the user has to resolve
+ * (CRM_SERVER vs the logged-in server, --local with nothing to point at).
+ */
+function resolveEndpoint(): Resolution {
   const envServer = process.env.CRM_SERVER
   const envToken = process.env.CRM_TOKEN
   const envInsecure =
@@ -70,13 +90,24 @@ export function remoteEndpoint(): RemoteEndpoint | null {
     }
   }
 
-  // 3. Mode contract: a saved session implies its server. Local mode is
-  //    an explicit opt-out: --local, CRM_LOCAL=1, or an explicit --db.
-  const forcedLocal =
-    gLocal || process.env.CRM_LOCAL === '1' || process.env.CRM_LOCAL === 'true'
-  if (forcedLocal || gDb) {
+  // 3. Explicit local intent beats a saved session (that is what --db has
+  //    always done). --db is already merged into config.database.path by
+  //    loadConfig, so it names a database by definition; --local/CRM_LOCAL
+  //    are a switch, not a target, and fail when nothing names the database.
+  if (gDb) {
     return null
   }
+  const forcedLocal =
+    gLocal || process.env.CRM_LOCAL === '1' || process.env.CRM_LOCAL === 'true'
+  if (forcedLocal) {
+    if (!config.database.path) {
+      die(NOT_CONNECTED)
+    }
+    return null
+  }
+
+  // 4. A saved session implies its server; with no session, local mode means
+  //    a [database] path the user declared in their own config.
   const sess = loadSession()
   if (sess?.server && sess.token) {
     if (envServer && envServer !== sess.server) {
@@ -89,9 +120,27 @@ export function remoteEndpoint(): RemoteEndpoint | null {
       insecure: envInsecure || sess.insecure === true,
     }
   }
+  if (config.database.path) {
+    return null
+  }
 
-  // 4. Local mode.
-  return null
+  // 5. No server, no login, no declared database: there is no implicit local
+  //    mode, so the caller reports the failure its command class owes the
+  //    user instead of inventing a database to create.
+  return 'unresolved'
+}
+
+/**
+ * Resolve the remote endpoint for a data command, or null for local mode.
+ * A data command with nowhere to send the request dies with NOT_CONNECTED
+ * (spec/client-repl.md A1, step 5) before any database is opened.
+ */
+export function remoteEndpoint(): RemoteEndpoint | null {
+  const resolved = resolveEndpoint()
+  if (resolved === 'unresolved') {
+    die(NOT_CONNECTED)
+  }
+  return resolved
 }
 
 let client: RpcClient | null = null
@@ -248,7 +297,28 @@ export function renderCtx() {
   return { config, fmt: config.defaults.format }
 }
 
-/** True when the current invocation targets a remote server. */
+/**
+ * `dispatch` for a dual-mode host command (`backup status` / `backup sync`):
+ * an operator holding a server can ask it, someone standing on the database
+ * host can run it locally. What neither may get is the client's "not
+ * connected" — the question these commands ask is where the database lives,
+ * so an unresolvable target is NEEDS_DB (spec/client-repl.md A2).
+ */
+export async function dispatchHost<
+  T extends Record<string, unknown> = Record<string, unknown>,
+>(method: string, params: Record<string, unknown>): Promise<T> {
+  if (resolveEndpoint() === 'unresolved') {
+    die(NEEDS_DB)
+  }
+  return await dispatch<T>(method, params)
+}
+
+/**
+ * True when the current invocation targets a remote server. An invocation
+ * with no server *and* no nameable database is not remote; it is unresolved,
+ * and the caller's own guard (NEEDS_DB in `getLocalCtx`) says why.
+ */
 export function isRemote(): boolean {
-  return remoteEndpoint() !== null
+  const resolved = resolveEndpoint()
+  return resolved !== null && resolved !== 'unresolved'
 }
