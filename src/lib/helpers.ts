@@ -8,6 +8,7 @@ import type { Company, Contact, Deal } from '../drizzle-schema'
 import * as schema from '../drizzle-schema'
 import { companyToRow, contactToRow, dealToRow, safeJSON } from '../format'
 import { formatPhone, tryNormalizePhone } from '../normalize'
+import { NEEDS_DB } from '../remote/dispatch'
 import { resolveCompanyForLink, resolveContact } from '../resolve'
 import { ServiceError } from './errors'
 
@@ -44,10 +45,25 @@ while (_argIdx < rawArgv.length) {
   _argIdx++
 }
 
+/**
+ * Config plus an opened local database. A local database has to be named —
+ * `--db`, `CRM_DB`, or a `[database] path` in a config file — and is never
+ * invented here, so a host command that cannot name one fails with NEEDS_DB
+ * instead of silently creating a file. The returned config carries that
+ * guarantee (`database.path` is a string) for the mount/export callers.
+ */
 export async function getCtx() {
   const config = loadConfig({ configPath: gConfig, dbPath: gDb, format: gFmt })
-  const db = await openDB(config.database.path)
-  return { config, db, fmt: config.defaults.format }
+  const dbPath = config.database.path
+  if (!dbPath) {
+    die(NEEDS_DB)
+  }
+  const db = await openDB(dbPath)
+  return {
+    config: { ...config, database: { path: dbPath } },
+    db,
+    fmt: config.defaults.format,
+  }
 }
 
 export function makeId(prefix: string) {

@@ -14,6 +14,7 @@ import {
   startReplicateDaemon,
 } from '../lib/litestream'
 import { generateBootstrapCode } from '../lib/secrets'
+import { NEEDS_DB } from '../remote/dispatch'
 import { startAdminServer } from '../server/admin'
 import { startServer } from '../server/serve'
 
@@ -47,6 +48,12 @@ export function registerServeCommand(program: Command): void {
         adminHost?: string
       }) => {
         const config = loadConfig({ configPath: gConfig, dbPath: gDb })
+        // A server hosts one named database, and nothing names it for you
+        // any more: an operator who forgot --db/CRM_DB gets the fixed
+        // message instead of a database silently created under $HOME.
+        if (!config.database.path) {
+          die(NEEDS_DB)
+        }
         // A project-discovered config that tried to define login
         // authority was stripped (loadConfig warns). Here that is fatal:
         // an operator who wrote [ldap] into crm.toml means to authenticate

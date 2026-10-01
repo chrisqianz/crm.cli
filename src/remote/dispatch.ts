@@ -33,6 +33,16 @@ interface RemoteEndpoint {
   server: string
 }
 
+/**
+ * Fixed error copy — tests assert these strings verbatim (spec/client-repl.md
+ * A1/A2). Two distinct failures: a client with nowhere to send the request,
+ * and a command that runs where the database lives but cannot name it.
+ */
+export const NOT_CONNECTED =
+  "Error: not connected — run 'crm login <server>' (get the server address from your admin console), or use --local/--db for the server host"
+export const NEEDS_DB =
+  'Error: server-host command — needs --db or a [database] path in your config'
+
 /** Resolve the remote endpoint, or null for local mode. */
 export function remoteEndpoint(): RemoteEndpoint | null {
   const envServer = process.env.CRM_SERVER
@@ -202,6 +212,9 @@ export async function dispatch<
 
 async function getLocalCtx() {
   const config = loadConfig({ configPath: gConfig, dbPath: gDb, format: gFmt })
+  if (!config.database.path) {
+    die(NEEDS_DB)
+  }
   const db = await openDB(config.database.path)
   return { config, db, fmt: config.defaults.format }
 }

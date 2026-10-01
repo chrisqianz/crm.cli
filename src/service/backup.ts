@@ -14,6 +14,7 @@ import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { recordAudit, verifyChain } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
+import { die } from '../lib/helpers'
 import {
   configPathFor,
   type Destination,
@@ -23,10 +24,24 @@ import {
   resolveLitestream,
   runLitestream,
 } from '../lib/litestream'
+import { NEEDS_DB } from '../remote/dispatch'
 
 const AUDIT_ACTIONS = ['backup.init', 'backup.sync', 'backup.restore'] as const
 
 type AuditEvent = (typeof AUDIT_ACTIONS)[number]
+
+/**
+ * Every backup operation is about the database this process was pointed at
+ * (`--db` / `CRM_DB` / a `[database] path`). There is no default to fall back
+ * on, so an unconfigured host says so with the fixed server-host message
+ * rather than deriving a litestream config for `undefined`.
+ */
+function requireDbPath(config: CRMConfig): string {
+  if (!config.database.path) {
+    die(NEEDS_DB)
+  }
+  return config.database.path
+}
 
 async function audit(
   db: DB,
@@ -67,12 +82,12 @@ function loadDestination(configPath: string): Destination {
 /** `backup init --destination <path|s3://bucket/prefix>`. */
 export async function backupInit(
   db: DB,
-  _config: CRMConfig,
+  config: CRMConfig,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const destination = String(params.destination ?? '')
   const dest = parseDestination(destination)
-  const dbPath = _config.database.path
+  const dbPath = requireDbPath(config)
   const configPath = configPathFor(dbPath)
   const bin = resolveLitestream()
   const { writeFileSync } = require('node:fs') as typeof import('node:fs')
@@ -101,10 +116,10 @@ export async function backupInit(
 /** `backup sync` — one-shot replication pass. */
 export async function backupSync(
   db: DB,
-  _config: CRMConfig,
+  config: CRMConfig,
   _params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const dbPath = _config.database.path
+  const dbPath = requireDbPath(config)
   const configPath = configPathFor(dbPath)
   if (!existsSync(configPath)) {
     throw new ServiceError(
@@ -139,10 +154,10 @@ interface StatusRow {
 /** `backup status` — per-DB replication status from litestream. */
 export async function backupStatus(
   _db: DB,
-  _config: CRMConfig,
+  config: CRMConfig,
   _params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const dbPath = _config.database.path
+  const dbPath = requireDbPath(config)
   const configPath = configPathFor(dbPath)
   if (!existsSync(configPath)) {
     throw new ServiceError(
@@ -186,14 +201,14 @@ export async function backupStatus(
 /** `backup restore --to <path>` — rebuild a fresh DB from the replica. */
 export async function backupRestore(
   db: DB,
-  _config: CRMConfig,
+  config: CRMConfig,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
   const to = String(params.to ?? '')
   if (!to) {
     throw new ServiceError('INVALID', 'usage: crm backup restore --to <path>')
   }
-  const dbPath = _config.database.path
+  const dbPath = requireDbPath(config)
   const configPath = configPathFor(dbPath)
   if (!existsSync(configPath)) {
     throw new ServiceError(
@@ -223,10 +238,10 @@ export async function backupRestore(
 /** `backup check` — restore to a temp file, verify chain, compare counts. */
 export async function backupCheck(
   db: DB,
-  _config: CRMConfig,
+  config: CRMConfig,
   _params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const dbPath = _config.database.path
+  const dbPath = requireDbPath(config)
   const configPath = configPathFor(dbPath)
   if (!existsSync(configPath)) {
     throw new ServiceError(

@@ -58,7 +58,8 @@ Config is auto-discovered by walking up from the current directory. Override wit
 
 Every command accepts:
 
-- `--db <path>` — SQLite database path (default: `~/.crm/crm.db`, env: `CRM_DB`)
+- `--db <path>` — SQLite database path (env: `CRM_DB`). No default: local
+  commands need a path from here or from `[database] path` in your config
 - `--format <fmt>` — Output format: `table`, `json`, `csv`, `tsv`, `ids`
 - `--config <path>` — TOML config file path
 - `--no-color` — Disable colored output

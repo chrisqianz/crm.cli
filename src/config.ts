@@ -53,7 +53,14 @@ export interface CRMConfig {
     path: string
     trusted: boolean
   }
-  database: { path: string }
+  /**
+   * `undefined` means nobody declared a database: no `--db`, no `CRM_DB`,
+   * no `[database] path` in a config file. Nothing here invents one — a
+   * client install must never end up with a silent local database (see
+   * spec/client-repl.md, sub-project A). Code that needs a database either
+   * guards with `NEEDS_DB` (host commands) or takes the remote path.
+   */
+  database: { path: string | undefined }
   defaults: { format: string }
   hooks: Record<string, string>
   /**
@@ -137,7 +144,9 @@ function defaultConfig(): CRMConfig {
   return {
     backup: { destination: '' },
     activity: { types: ['note', 'call', 'meeting', 'email'] },
-    database: { path: join(homedir(), '.crm', 'crm.db') },
+    // Deliberately no default path: an unset database is a fact that
+    // callers must handle, not something to paper over here.
+    database: { path: undefined },
     pipeline: {
       stages: [...DEFAULT_STAGES],
       won_stage: 'closed-won',
@@ -502,7 +511,7 @@ export function loadConfig(opts: {
     config.phone.display = process.env.CRM_PHONE_DISPLAY
   }
 
-  // DB path resolution: --db flag > CRM_DB env > config file > default (~/.crm/crm.db)
+  // DB path resolution: --db flag > CRM_DB env > config file > unset
   if (opts.dbPath) {
     config.database.path = opts.dbPath
   } else if (process.env.CRM_DB) {

@@ -65,7 +65,10 @@ cp skills/SKILL.md ~/.your-agent/skills/crm-cli/SKILL.md
 
 ## Storage
 
-Everything lives in a single SQLite file. Default: `~/.crm/crm.db`.
+Everything lives in a single SQLite file, and you name it: `--db <path>`,
+`CRM_DB`, or `[database] path` in your config. Nothing picks a path for you —
+a command that needs a database and cannot name one fails instead of
+creating one.
 
 ```bash
 crm --db ./my-project.db contact list    # use a specific database

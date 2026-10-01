@@ -1,7 +1,15 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { loadConfig } from '../src/config'
 import { createTestContext } from './helpers.ts'
 
 describe('config: phone settings', () => {
@@ -737,5 +745,19 @@ describe('config: malformed TOML warning', () => {
     expect(stderr).toContain('could not parse config file')
     // Should still succeed with defaults
     expect(result.exitCode).toBe(0)
+  })
+})
+
+describe('database path is never invented', () => {
+  test('no config file → database.path is undefined', () => {
+    const home = mkdtempSync(join(tmpdir(), 'crm-cfg-'))
+    const cfg = loadConfig({ configPath: join(home, 'absent.toml') })
+    expect(cfg.database.path).toBeUndefined()
+  })
+  test('[database] path in config still resolves', () => {
+    const home = mkdtempSync(join(tmpdir(), 'crm-cfg-'))
+    const p = join(home, 'crm.toml')
+    writeFileSync(p, '[database]\npath = "/srv/crm.db"\n')
+    expect(loadConfig({ configPath: p }).database.path).toBe('/srv/crm.db')
   })
 })
