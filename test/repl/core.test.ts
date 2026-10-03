@@ -15,8 +15,9 @@ import { PassThrough } from 'node:stream'
 import { Command } from 'commander'
 
 import { buildProgram } from '../../src/cli'
+import { tokenize } from '../../src/repl/lex'
 import type { ReplContext, ReplIo } from '../../src/repl/repl'
-import { handleLine, runRepl, statusLine, tokenize } from '../../src/repl/repl'
+import { handleLine, runRepl, statusLine } from '../../src/repl/repl'
 import {
   bootstrapOwner,
   CRM as CRM_BIN,
@@ -493,4 +494,120 @@ describe('REPL wizard (task 3)', () => {
     expect(`${r.out}${r.err}`).not.toContain('WizardAbort')
     expect(r.err).not.toContain('Unhandled')
   }, 45_000)
+})
+
+describe('REPL completion & next-actions (task 4)', () => {
+  test('Tab completes across planes at a real terminal, and the completed line runs', async () => {
+    // bun's readline is the completion renderer, so this can only be proven
+    // through a pty: type a prefix, press Tab, then press Enter and watch
+    // the *completed* text execute. Same harness as the login pty test.
+    const db = freshDb('tab.db')
+    const seeded = await repl(
+      [
+        'contact add 张三 --email zhang@x.io',
+        'contact add 张伟 --email zw@x.io',
+        'q',
+      ],
+      ['--db', db],
+    )
+    expect(seeded.code).toBe(0)
+    let screen = ''
+    const decode = new TextDecoder()
+    const term = new Bun.Terminal({
+      cols: 110,
+      rows: 30,
+      data: (_t: Bun.Terminal, chunk: Uint8Array) => {
+        screen += decode.decode(chunk, { stream: true })
+      },
+    })
+    const home = mkdtempSync(join(tmpdir(), 'crm-repl-tab-'))
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      HOME: home,
+      CRM_CONFIG: '',
+      CRM_DB: db,
+    }
+    for (const k of ['CRM_SERVER', 'CRM_TOKEN', 'CRM_REPL_FORCE', 'NO_COLOR']) {
+      delete env[k]
+    }
+    const proc = Bun.spawn(['bun', 'run', CRM_BIN], {
+      cwd: join(import.meta.dir, '..', '..'),
+      terminal: term,
+      env: env as NodeJS.ProcessEnv,
+    })
+    const settled = async (what: () => boolean, ms: number) => {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        if (what()) {
+          return true
+        }
+        await Bun.sleep(100)
+      }
+      return what()
+    }
+    try {
+      expect(await settled(() => screen.includes('crm>'), 20_000)).toBe(true)
+      // warm (contact.list) runs at session start; give it a beat on this
+      // loaded host before the ref-plane Tab.
+      await Bun.sleep(1500)
+
+      // static-ish plane: subcommand completion, then Enter executes it
+      term.write('contact li')
+      await Bun.sleep(200)
+      term.write('\t')
+      expect(await settled(() => screen.includes('contact list'), 8000)).toBe(
+        true,
+      )
+      term.write('\n')
+      expect(await settled(() => screen.includes('张三'), 20_000)).toBe(true)
+
+      // dynamic plane: a cached display name completes and opens the record
+      term.write('contact show 张')
+      await Bun.sleep(200)
+      term.write('\t')
+      expect(
+        await settled(
+          () => screen.includes('张三 张伟') || screen.includes('张三'),
+          8000,
+        ),
+      ).toBe(true)
+      term.write('\n')
+      expect(await settled(() => screen.includes('zhang@x.io'), 20_000)).toBe(
+        true,
+      )
+
+      // the footer plane: what a human does after opening someone
+      expect(await settled(() => screen.includes('· next:'), 8000)).toBe(true)
+
+      term.write('q\n')
+      const exited = await Promise.race([
+        proc.exited.then((c) => c),
+        Bun.sleep(15_000).then(() => -1),
+      ])
+      expect(exited).toBe(0)
+    } finally {
+      try {
+        proc.kill(9)
+      } catch {
+        // already gone
+      }
+    }
+  }, 120_000)
+
+  test('a successful add prints one next-actions line; noise prints none', async () => {
+    const db = freshDb('footer.db')
+    const ok = await repl(['contact add Foo --email f@x.io', 'q'], ['--db', db])
+    expect(ok.out).toContain('· next:')
+    // the hint is a shortcut you can type verbatim — aliases are welcome here
+    expect(ok.out).toContain('s contact')
+    // error paths stay silent on both footer branches: the open shortcut…
+    const badOpen = await repl(['contact nosuchrefxyz', 'q'], ['--db', db])
+    expect(badOpen.out).not.toContain('· next:')
+    // …and the plain exec path (linked task with a missing contact)
+    const badExec = await repl(
+      ['task add x --contact ct_missing', 'q'],
+      ['--db', db],
+    )
+    expect(badExec.out).not.toContain('· next:')
+  }, 60_000)
 })

@@ -11,8 +11,8 @@
 import { describe, expect, test } from 'bun:test'
 
 import { buildProgram } from '../../src/cli'
+import { tokenize } from '../../src/repl/lex'
 import { parseReplLine } from '../../src/repl/parser'
-import { tokenize } from '../../src/repl/repl'
 
 const program = buildProgram()
 const ctx = { program }

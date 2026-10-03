@@ -8,7 +8,15 @@ import { promptSecret } from '../lib/prompt'
 import { loadSession } from '../lib/session'
 import { rankCandidates, scoreToken } from '../lib/suggest'
 import { dispatch } from '../remote/dispatch'
+import { RefCache } from './cache'
+import {
+  applyBunCompletion,
+  completeLine,
+  nextActions,
+  type PlaneCtx,
+} from './complete'
 import { callGuarded, execGuarded } from './guard'
+import { tokenize } from './lex'
 import { type Entity, type Intent, parseReplLine } from './parser'
 import { type Ask, type FieldOption, runWizard, WizardAbort } from './wizard'
 
@@ -42,37 +50,9 @@ export class ReplInputError extends Error {}
 
 /**
  * Split a REPL line into argv, honouring double quotes so a name with a space
- * stays one argument. Quotes are not shell quotes: no escapes, no `$`, no
- * redirection — a REPL line only ever becomes an argv array. The splitter
- * itself stays dumb; `parseLine` is what refuses an unterminated quote.
+ * stays one argument. The canonical home is lex.ts — the completer and the
+ * executor must never disagree about what a token is.
  */
-export function tokenize(line: string): string[] {
-  const tokens: string[] = []
-  let current = ''
-  let quoted = false
-  let started = false
-  for (const ch of line) {
-    if (ch === '"') {
-      quoted = !quoted
-      started = true
-      continue
-    }
-    if (!quoted && (ch === ' ' || ch === '\t')) {
-      if (started) {
-        tokens.push(current)
-        current = ''
-        started = false
-      }
-      continue
-    }
-    current += ch
-    started = true
-  }
-  if (started) {
-    tokens.push(current)
-  }
-  return tokens
-}
 
 /** Tokens for a line, or a complaint — an open quote would otherwise run a
  * command with an argument the user never finished typing. */
@@ -256,6 +236,33 @@ export async function runRepl(
   const ctx: ReplContext = { program, home: homedir(), entryArgv }
 
   const history: string[] = [] // newest first; capped; never a file
+  // Tab completion reads the live program plus this ref plane — neither is a
+  // hand-maintained list, so neither can drift from what the CLI accepts.
+  const refCache = new RefCache(async (entity) => {
+    if (entity === 'log') {
+      return []
+    }
+    const g = await callGuarded(() =>
+      dispatch<{ rows: Record<string, unknown>[] }>(`${entity}.list`, {
+        limit: '200',
+      }),
+    )
+    const out: string[] = []
+    const rows = g.ok && g.value ? (g.value.rows ?? []) : []
+    for (const row of rows) {
+      const id = String(row.id ?? '')
+      const label = String(row.name ?? row.title ?? '')
+      if (label) {
+        out.push(label)
+      }
+      if (id) {
+        out.push(id)
+      }
+    }
+    return out
+  })
+  const planeCtx: PlaneCtx = { program, refs: (entity) => refCache.get(entity) }
+  const dim = (text: string) => (terminal ? `\u{1b}[2m${text}\u{1b}[0m` : text)
   const queue: (string | null)[] = [] // lines typed while a command ran
   // An ambiguous fuzzy word: numbered rows waiting for a numeric pick.
   let pending: OpenHit[] | null = null
@@ -277,7 +284,20 @@ export async function runRepl(
     onLine(null)
   }
   const makeRl = () => {
-    const rl = createInterface({ input, output, terminal, prompt: PROMPT })
+    const rl = createInterface({
+      input,
+      output,
+      terminal,
+      prompt: PROMPT,
+      completer: (line: string) => {
+        const result = completeLine(line, planeCtx)
+        // bun calls the completer then ignores the return value (1.3.14) —
+        // on bun, the completer is also the renderer. node still gets the
+        // classic [candidates, common] contract through the return.
+        applyBunCompletion(rl, line, result[0], result[1], PROMPT)
+        return result
+      },
+    })
     // bun's readline exposes the scrollback as a plain array (newest first);
     // the node typings don't declare it.
     const scrollback = rl as unknown as { history: string[] }
@@ -434,6 +454,8 @@ export async function runRepl(
   }
 
   say(BANNER)
+  // the two planes a human reaches for first; a failed warm stays silent
+  refCache.warmStart().catch(() => undefined)
   showPrompt()
   try {
     for (;;) {
@@ -498,6 +520,9 @@ export async function runRepl(
       }
       if (intent.kind === 'open') {
         await runHanded([intent.entity, 'show', intent.ref])
+        if (!ctx.lastErrored) {
+          say(dim(`· next: ${nextActions(intent).join('  ·  ')}`))
+        }
         showPrompt()
         continue
       }
@@ -556,6 +581,12 @@ export async function runRepl(
         continue
       }
       await runHanded(intent.argv)
+      if (!ctx.lastErrored) {
+        const tips = nextActions(intent)
+        if (tips.length > 0) {
+          say(dim(`· next: ${tips.join('  ·  ')}`))
+        }
+      }
       showPrompt()
     }
   } finally {
