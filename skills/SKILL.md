@@ -8,6 +8,11 @@ install: curl -fsSL https://raw.githubusercontent.com/dzhng/crm.cli/main/install
 
 A headless, CLI-first CRM. Contacts, deals, and pipeline in a single SQLite file — queryable from your terminal, composable with Unix tools, and mountable as a virtual filesystem.
 
+> **Agents: always drive `crm` with one-shot commands (`crm <flat argv>`) as
+documented here.** The interactive REPL (`crm` with no arguments) is a human
+presentation layer over the same commands — it needs a terminal and waits for
+input, so it is not an agent interface.
+
 ## Install
 
 ```bash

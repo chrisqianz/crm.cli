@@ -1,7 +1,8 @@
 # Client Zero-Footprint Contract + Interactive REPL (UX v2)
 
-Status: approved design (2026-10-01). Sub-project A is contracted and
-implementation-ready; sub-project C builds on it; sub-project B is backlog.
+Status: A and C implemented (2026-10-03); B remains backlog. Machine
+surface (`crm <flat argv>`) is unchanged — verified by the untouched
+functional suites.
 
 ## Background
 
@@ -130,13 +131,18 @@ db path; `[database]` presence becomes meaningful), `src/lib/paths.ts`
   error (machine surface untouched). Hidden `CRM_REPL_FORCE=1` enters the
   REPL regardless of TTY (test seam).
 - Prompt `crm>`; right-side status: `not logged in` or
-  `admin@host:port ✓`. Works offline until a data command needs a
-  server, then prompts to `login`.
-- `login` wizard: server address (skipped when `[remote]` set) → username
-  → password (masked) → token stored via existing session file (A3
-  whitelist) + live `RpcClient` held in session context and reused for
-  every subsequent command (one TLS handshake per session; auto
-  reconnect once on transport failure before reporting an error).
+  `admin@host:port ✓`. Line history is in-memory only (readline
+  `historySize`) — nothing is persisted from the prompt. Works offline
+  until a data command needs a server, then prompts to `login`.
+- `login` wizard: server address (skipped when one is already known —
+  `CRM_SERVER` or a saved session) → username → password (masked on a TTY;
+  on a pipe the prompt echoes and the next line is read plainly, since
+  piped input is already visible) → token stored via existing session file
+  (A3 whitelist). The wizard hands complete argv to the real `login`
+  command — token exchange and session writes live in one place. Dispatch
+  holds one `RpcClient` per server for the session's life (one TLS
+  handshake per session; transport failures reconnect exactly once before
+  reporting an error — structured RPC errors are answers, never retried).
 - `--db` at entry: REPL targets the local database directly (server-host
   operators); remote and local REPL share the same command layer because
   both go through `dispatch()`.
@@ -157,6 +163,9 @@ crm> status / logout / ? / q      session control
 
 - Verb-first everywhere: `add|show|edit|rm|list <entity> [ref] [flags...]`.
   Bare verb or unknown entity → wizard asks.
+- `log <body>` is a pseudo-entity line: the body is free text, the subject
+  is fuzzy-matched and linked; it never enters the verb+entity plane
+  where a second token would be read as a flag.
 - Entity-first shorthand: `<entity> <ref>` opens; `<entity>` alone lists;
   bare fuzzy-unique word (`张`) opens the unique match across entities,
   ambiguity prints a numbered pick list.
@@ -167,13 +176,14 @@ crm> status / logout / ? / q      session control
 
 ### C3. Wizard engine (missing-args-asked)
 
-Field specs come from the existing registry param schema per method — no
-second source of truth. Behavior: ask missing required fields in schema
-order; entity-typed fields offer Tab-completable pick from live data;
-optional fields skip on empty; required re-asks on empty; password-like
-fields mask; `edit` prints current value and keeps it on empty Enter.
-The engine is a pure function over an injected `ask()` interface so it is
-unit-testable without a TTY.
+Field specs live in `src/repl/fields.ts` — an explicit, REPL-only table and
+the wizard's single source of truth (commander flags remain the machine
+contract; the registry has no machine-readable param schema, verified).
+Behavior: ask missing required fields in table order; entity-typed fields
+offer a fuzzy pick from live data (unique match auto-selects); optional
+fields skip on empty; required re-asks on empty; `edit` prints a current
+value preview and keeps it on empty Enter. The engine is a pure function
+over an injected `ask()` interface so it is unit-testable without a TTY.
 
 ### C4. Fuzzy layer
 
@@ -189,12 +199,14 @@ unit-testable without a TTY.
 
 | File | Responsibility |
 |---|---|
-| `session.ts` | connection (RpcClient or local ctx), identity, status line, reconnect |
+| `session.ts` | status line, known-server resolution (env → saved session) |
 | `parser.ts` | tokenize, alias map, verb/entity resolution, one-shot flag passthrough |
-| `wizard.ts` | schema-driven ask-sequence over injected `ask()` |
-| `complete.ts` | plane detection + fuzzy candidate ranking |
-| `ui.ts` | tables/colors/next-actions rendering (reuses existing formatters) |
-| `repl.ts` | readline loop wiring the pieces; `handleLine()` exported for tests |
+| `fields.ts` | the wizard field-spec table (REPL-only source of truth) |
+| `wizard.ts` | table-driven ask-sequence over injected `ask()` |
+| `cache.ts` | `RefCache`: warmed entity refs, TTL, inflight coalescing, login re-warm |
+| `complete.ts` | plane detection + fuzzy candidate ranking (bun-safe self-drawing completion) |
+| `guard.ts` | exit interception (`execGuarded`/`callGuarded`) — a bad line costs the line, never the session |
+| `repl.ts` | readline loop wiring the pieces; `handleLine()`-style dispatch, macros, footer |
 
 ### C6. Testing
 

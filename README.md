@@ -85,6 +85,74 @@ Error: server-host command — needs --db or a [database] path in your config
 
 Both exit 1. Full order below: [The mode contract](#the-mode-contract-who-touches-which-database).
 
+## The interactive REPL
+
+Type `crm` with nothing else and you get a human shell over the same
+commands — short verbs, wizard fill-in, Tab completion. It is a
+presentation layer only: every line goes through the same dispatch path, so
+RBAC, audit, and the mode contract apply exactly as they do to one-shot
+`crm <args>`. **Scripts and agents keep using one-shot mode; it is
+unchanged.**
+
+```text
+$ crm
+ crm · not logged in ────────────────────────────────  1 unauthed
+crm> login
+server (host:port): 10.0.0.9:8443
+username: ada
+password: ········
+Logged in as ada (editor) → 10.0.0.9:8443
+
+crm> add
+entity: contact
+name: 张三
+phone:
+ · next: s contact <the id above>
+
+crm> contact 张三
+[contact] 张三 (ct_01…)  phone +8613…  —  next: e contact <id>
+
+crm> today
+— due today —
+  Ship the Q3 brief (tk_01…)   due 18:00
+— overdue —
+  (none)
+— pipeline —
+  …
+— stale —
+  …
+
+crm> done
+done which?
+  1) Ship the Q3 brief
+1
+ tk_01… done
+
+crm> q
+```
+
+What it knows:
+
+- **Grammar** — verb-first (`add|show|edit|rm|list <entity> [ref]`),
+  entity-first shorthand (`contact 张三` opens, `contact` lists), aliases
+  (`new`/`s`/`ls`/`e`/`me`/`q`/`?`), and one-shot flags passed through
+  untouched. A bare `log <text>` files an activity and fuzzy-links the
+  subject.
+- **Wizard** — any missing required field is asked, in `src/repl/fields.ts`
+  order; entity fields offer a fuzzy pick from live data (a unique match
+  auto-selects); `edit` previews the current value and keeps it on Enter.
+- **Completion** — Tab completes three planes: verbs/aliases, flags, and
+  live entity refs (prefetched at login, re-warmed on identity change).
+- **Macros** — `today` (due / overdue / pipeline / stale) and `done`
+  (pick → mark done).
+- **Session** — `login` needs the server only when none is known; the
+  connection is held for the whole session and reconnects exactly once on a
+  transport failure. `--db <path>` at entry runs the REPL directly against
+  a local database (server-host operators). History is in-memory only —
+  the REPL writes nothing to disk beyond the normal session file.
+
+Full contract: [spec/client-repl.md](spec/client-repl.md).
+
 ## Storage
 
 Everything lives in a single SQLite file, and you name it: `--db <path>`,
