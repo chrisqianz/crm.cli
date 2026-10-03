@@ -76,7 +76,9 @@ function freshDb(name = 'x.db'): string {
 }
 
 function ctx(entryArgv: string[] = []): ReplContext {
-  return { program: new Command(), home: '/tmp/crm-unit-home', entryArgv }
+  // A real program: the parser introspects entity subcommands, so a bare
+  // `new Command()` would make `contact list` look like `contact <ref>`.
+  return { program: buildProgram(), home: '/tmp/crm-unit-home', entryArgv }
 }
 
 test('empty crm opens the REPL and q exits 0', async () => {
@@ -377,4 +379,54 @@ describe('REPL at a real terminal (pty)', () => {
       }
     }
   }, 90_000)
+})
+
+describe('REPL grammar (task 2)', () => {
+  const dbPath = () => join(mkdtempSync(join(tmpdir(), 'crm-repl-g')), 'g.db')
+
+  test('a unique fuzzy word opens the contact directly', async () => {
+    const db = dbPath()
+    const r = await repl(
+      ['contact add 张三 --email zhang@x.io', '张三', 'q'],
+      ['--db', db],
+    )
+    expect(r.out).toContain('zhang@x.io')
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('an ambiguous word prints a numbered pick list; a number opens', async () => {
+    const db = dbPath()
+    const r = await repl(
+      [
+        'contact add 张三 --email a1@x.io',
+        'contact add 张伟 --email a2@x.io',
+        '张',
+        '1',
+        'q',
+      ],
+      ['--db', db],
+    )
+    expect(r.out).toMatch(/1\..*张三/)
+    expect(r.out).toMatch(/2\..*张伟/)
+    expect(r.out).toContain('a1@x.io') // the picked row opened
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('one-shot command lines still run verbatim (report pipeline)', async () => {
+    const db = dbPath()
+    const r = await repl(['report pipeline', 'q'], ['--db', db])
+    expect(`${r.out}${r.err}`.toLowerCase()).not.toContain('unknown command')
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('an unknown word falls through to commander and the loop survives', async () => {
+    const db = dbPath()
+    const r = await repl(
+      ['zygote', 'contact add Ben --email b@x.io', 'q'],
+      ['--db', db],
+    )
+    expect(r.err.toLowerCase()).toContain('unknown command')
+    expect(r.out).toMatch(/ct_[0-9A-Z]{20,}/) // the next line still ran: add printed its id
+    expect(r.code).toBe(0)
+  }, 45_000)
 })

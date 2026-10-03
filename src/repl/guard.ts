@@ -19,36 +19,67 @@ class ReplExit extends Error {
 }
 
 /**
+ * Run one async action with `process.exit` swapped for a thrower — the
+ * general mechanism behind `execGuarded`. Anything that can reach `die()`
+ * (a commander parse, a direct `dispatch()` call for the fuzzy layer) runs
+ * through here so a failure costs the line, never the session. Genuine
+ * bugs re-throw with their stack rather than being swallowed; nesting is
+ * safe because each layer restores whatever exit it found.
+ */
+export interface GuardedResult<T> {
+  errored: boolean
+  exitCode: number
+  ok: boolean
+  value?: T
+}
+
+async function withExitGuard<T>(
+  fn: () => Promise<T>,
+): Promise<GuardedResult<T>> {
+  const realExit = process.exit
+  process.exit = ((code?: number) => {
+    throw new ReplExit(code ?? 0)
+  }) as typeof process.exit
+  try {
+    const value = await fn()
+    return { ok: true, value, exitCode: 0, errored: false }
+  } catch (e) {
+    if (e instanceof ReplExit) {
+      return { ok: false, exitCode: e.code, errored: e.code !== 0 }
+    }
+    if (e && typeof e === 'object' && 'exitCode' in e) {
+      const code = Number((e as { exitCode: unknown }).exitCode)
+      return { ok: false, exitCode: code, errored: code !== 0 }
+    }
+    throw e // genuine bugs surface as stack traces, not swallowed
+  } finally {
+    process.exit = realExit
+  }
+}
+
+/**
  * Run one REPL line through the same commander program one-shot uses — same
  * commands, same flags, same output, same exit codes — without letting the
  * command end the session.
  *
  * Commander's own usage errors (unknown command/option, `--help`) surface as
  * thrown objects carrying `.exitCode`, which is how one-shot decides its exit
- * status too; anything else is a genuine bug and re-throws with its stack
- * rather than being swallowed.
+ * status too.
  */
 export async function execGuarded(
   program: Command,
   argv: string[],
 ): Promise<{ exitCode: number; errored: boolean }> {
-  const realExit = process.exit
-  process.exit = ((code?: number) => {
-    throw new ReplExit(code ?? 0)
-  }) as typeof process.exit
-  try {
-    await program.parseAsync(['node', 'crm', ...argv])
-    return { exitCode: 0, errored: false }
-  } catch (e) {
-    if (e instanceof ReplExit) {
-      return { exitCode: e.code, errored: e.code !== 0 }
-    }
-    if (e && typeof e === 'object' && 'exitCode' in e) {
-      const code = Number((e as { exitCode: unknown }).exitCode)
-      return { exitCode: code, errored: code !== 0 }
-    }
-    throw e // genuine bugs surface as stack traces, not swallowed
-  } finally {
-    process.exit = realExit
-  }
+  const g = await withExitGuard(() =>
+    program.parseAsync(['node', 'crm', ...argv]),
+  )
+  return { exitCode: g.exitCode, errored: g.errored }
+}
+
+/** A direct call (`dispatch()` for the fuzzy open layer) under the same
+ * protection: die() prints its own copy, the guard keeps the loop alive. */
+export function callGuarded<T>(
+  fn: () => Promise<T>,
+): Promise<GuardedResult<T>> {
+  return withExitGuard(fn)
 }

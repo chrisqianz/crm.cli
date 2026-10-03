@@ -5,8 +5,10 @@ import { createInterface } from 'node:readline'
 import type { Command } from 'commander'
 
 import { loadSession } from '../lib/session'
-import { execGuarded } from './guard'
-import type { ParsedIntent } from './parser'
+import { rankCandidates, scoreToken } from '../lib/suggest'
+import { dispatch } from '../remote/dispatch'
+import { callGuarded, execGuarded } from './guard'
+import { type Intent, parseReplLine } from './parser'
 
 const PROMPT = 'crm> '
 const BANNER = 'crm interactive REPL — ? for help, q to quit'
@@ -80,34 +82,21 @@ function parseTokens(text: string): string[] {
 }
 
 /**
- * The whole of Task 1's grammar: session words, everything else is argv.
- * Returns null for a line that asks for nothing (a bare Enter).
- *
- * `_ctx` is unused until Task 2's parser, which reads session state and the
- * entity tables out of it — the signature is the contract already.
+ * One line in, one intent out: tokenize (quotes are the only syntax) and
+ * hand the tokens to the grammar in parser.ts. Returns null for a line that
+ * asks for nothing (a bare Enter); an unterminated quote throws
+ * ReplInputError, which the loop prints as one clean error line.
  */
-// biome-ignore lint/suspicious/useAwait: the Promise is Task 2's contract (its parser reads session state); Task 1's grammar is synchronous.
+// biome-ignore lint/suspicious/useAwait: the Promise is the loop's contract; the grammar itself is synchronous by design.
 export async function handleLine(
   line: string,
-  _ctx: ReplContext,
-): Promise<ParsedIntent | null> {
+  ctx: ReplContext,
+): Promise<Intent | null> {
   const text = line.trim()
   if (!text) {
     return null
   }
-  if (text === 'q' || text === 'quit' || text === 'exit') {
-    return { kind: 'session', op: 'quit' }
-  }
-  if (text === '?' || text === 'help' || text === 'commands') {
-    return { kind: 'session', op: 'help' }
-  }
-  if (text === 'status') {
-    return { kind: 'session', op: 'status' }
-  }
-  if (text === 'logout') {
-    return { kind: 'session', op: 'logout' }
-  }
-  return { kind: 'exec', argv: parseTokens(text) }
+  return parseReplLine(parseTokens(text), { program: ctx.program })
 }
 
 /** Where this session's data would come from: a local db, a server, or neither. */
@@ -162,6 +151,79 @@ function sessionArgv(
   }
 }
 
+/** Fuzzy-open layer: a row the bare-word lookup can pick from. */
+interface OpenHit {
+  entity: 'company' | 'contact' | 'deal' | 'task'
+  id: string
+  label: string
+  score: number
+}
+
+const OPEN_ENTITIES = ['contact', 'company', 'deal', 'task'] as const
+
+function openWordScore(q: string, t: string): number {
+  const s = scoreToken(q, t)
+  if (s > 0) {
+    return s
+  }
+  // Containment is what makes CJK refs work (张 ~ 张三): the command scorer's
+  // 3-char prefix/edit guards are tuned for ASCII words and score them 0.
+  if (t.includes(q)) {
+    return 2.5
+  }
+  return 0
+}
+
+/**
+ * Rank every openable row against a bare word, local or remote (dispatch
+ * decides, exactly like a command would). `error: true` means the data layer
+ * already printed its own complaint — no db, no session — so the loop just
+ * moves on; there is nothing to add on top of that copy.
+ */
+async function openWordHits(
+  word: string,
+): Promise<{ error: boolean; hits: OpenHit[] }> {
+  const lists = await callGuarded(async () => {
+    const out: Record<string, Record<string, unknown>[]> = {}
+    for (const entity of OPEN_ENTITIES) {
+      const r = await dispatch<{ rows: Record<string, unknown>[] }>(
+        `${entity}.list`,
+        { limit: '200' },
+      )
+      out[entity] = r.rows ?? []
+    }
+    return out
+  })
+  if (!(lists.ok && lists.value)) {
+    return { error: true, hits: [] }
+  }
+  const candidates: OpenHit[] = []
+  for (const entity of OPEN_ENTITIES) {
+    for (const row of lists.value[entity] ?? []) {
+      const id = String(row.id ?? '')
+      if (!id) {
+        continue
+      }
+      candidates.push({
+        entity,
+        id,
+        label: String(row.name ?? row.title ?? id),
+        score: 0,
+      })
+    }
+  }
+  const ranked = rankCandidates(
+    [word.toLowerCase()],
+    candidates,
+    (c) => [c.label.toLowerCase(), c.id.toLowerCase()],
+    { score: openWordScore, top: 9 },
+  )
+  return {
+    error: false,
+    hits: ranked.map((r) => ({ ...r.item, score: r.score })),
+  }
+}
+
 /**
  * The read-eval-print loop. Each line becomes argv for the shared commander
  * program under the exit guard, so output, colors, RBAC, audit and the
@@ -193,6 +255,8 @@ export async function runRepl(
 
   const history: string[] = [] // newest first; capped; never a file
   const queue: (string | null)[] = [] // lines typed while a command ran
+  // An ambiguous fuzzy word: numbered rows waiting for a numeric pick.
+  let pending: OpenHit[] | null = null
   let waiter: ((line: string | null) => void) | null = null
   let handingOff = false
   const onLine = (line: string | null) => {
@@ -289,7 +353,7 @@ export async function runRepl(
           history.pop()
         }
       }
-      let intent: ParsedIntent | null
+      let intent: Intent | null
       try {
         intent = await handleLine(line, ctx)
       } catch (e) {
@@ -300,6 +364,23 @@ export async function runRepl(
         }
         throw e
       }
+      // A bare number answers the last ambiguous openWord list, and nothing
+      // else: every other line clears the pending pick first.
+      if (pending && /^\d+$/.test(text)) {
+        const hit = pending[Number(text) - 1]
+        if (hit) {
+          pending = null
+          await runHanded([hit.entity, 'show', hit.id])
+          showPrompt()
+          continue
+        }
+        say(
+          `no #${text} — pick 1-${pending.length}, or type anything to move on`,
+        )
+        showPrompt()
+        continue
+      }
+      pending = null
       if (!intent) {
         showPrompt()
         continue
@@ -317,6 +398,47 @@ export async function runRepl(
         if (argv) {
           await runHanded(argv)
         }
+        showPrompt()
+        continue
+      }
+      if (intent.kind === 'open') {
+        await runHanded([intent.entity, 'show', intent.ref])
+        showPrompt()
+        continue
+      }
+      if (intent.kind === 'openWord') {
+        const { error, hits } = await openWordHits(intent.word)
+        if (error) {
+          ctx.lastErrored = true
+        } else if (hits.length === 0) {
+          // Not a row after all — commander fields it (did-you-mean lives
+          // there), which keeps `zygote` a usage error, not a shrug.
+          await runHanded([intent.word])
+        } else if (hits.length === 1 || hits[0].score > hits[1].score) {
+          await runHanded([hits[0].entity, 'show', hits[0].id])
+        } else {
+          pending = hits
+          for (const [i, h] of hits.entries()) {
+            say(`  ${i + 1}. ${h.entity} · ${h.label}`)
+          }
+          say('  number to open, anything else to move on')
+        }
+        showPrompt()
+        continue
+      }
+      if (intent.kind === 'wizard') {
+        // Task 3 wires the prompts; until then the one-shot form works.
+        say(
+          'the wizard lands in the next drop — meanwhile: contact add Ada --email a@x.io',
+        )
+        showPrompt()
+        continue
+      }
+      if (intent.kind === 'macro') {
+        // Task 5 executes today/done; meanwhile the commands work.
+        say(
+          'today/done land in the next drop — meanwhile: task list, report pipeline',
+        )
         showPrompt()
         continue
       }

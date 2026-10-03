@@ -150,6 +150,65 @@ function levenshteinCapped(a: string, b: string, cap = 2): number {
 }
 
 /**
+ * Score one query token against one candidate token.
+ * exact=3, prefix=2 (both sides ≥3 chars — 'reportt' ~ 'report' but not
+ * 'port'), edit-distance 1 = 1.6 (≥3), 2 = 1 (≥5). Exported for the REPL's
+ * fuzzy open, which layers a containment rule on top of this.
+ */
+export function scoreToken(q: string, t: string): number {
+  if (t === q) {
+    return 3
+  }
+  let s = 0
+  if (t.length >= 3 && q.length >= 3 && (t.startsWith(q) || q.startsWith(t))) {
+    s = 2
+  }
+  if (s === 0 && q.length >= 3 && t.length >= 3) {
+    const d = levenshteinCapped(q, t)
+    const acceptable =
+      (d === 1 && Math.min(q.length, t.length) >= 3) ||
+      (d === 2 && Math.min(q.length, t.length) >= 5)
+    if (acceptable) {
+      s = d === 1 ? 1.6 : 1
+    }
+  }
+  return s
+}
+
+/**
+ * Rank items by the summed best score over their tokens — one point per
+ * query token, best matching candidate token wins it. `score` is swappable
+ * so callers can extend the notion of "similar" without forking the loop;
+ * ties keep input order (sort is stable).
+ */
+export function rankCandidates<T>(
+  queryTokens: string[],
+  items: T[],
+  getTokens: (item: T) => string[],
+  opts: { score?: (q: string, t: string) => number; top?: number } = {},
+): { item: T; score: number }[] {
+  const score = opts.score ?? scoreToken
+  const scored = items.map((item) => {
+    let total = 0
+    for (const q of queryTokens) {
+      let best = 0
+      for (const t of getTokens(item)) {
+        const s = score(q, t)
+        if (s > best) {
+          best = s
+        }
+      }
+      total += best
+    }
+    return { item, score: total }
+  })
+  return scored
+    .filter((r) => r.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, opts.top ?? 8)
+}
+
+/**
  * Rank commands against a free-text query. Returns paths most-relevant
  * first (empty when nothing scored).
  */
@@ -169,48 +228,15 @@ export function suggestCommands(
       tokens.push(...en)
     }
   }
-  const index = buildCommandIndex(program)
-  const scored = index
-    .map((entry) => {
-      let score = 0
-      for (const q of tokens) {
-        let best = 0
-        for (const t of entry.tokens) {
-          let s = 0
-          if (t === q) {
-            s = 3
-          } else if (
-            t.length >= 3 &&
-            q.length >= 3 &&
-            (t.startsWith(q) || q.startsWith(t))
-          ) {
-            // prefix only: 'reportt' ~ 'report', but 'reportt' !~ 'port'
-            s = 2
-          }
-          if (s === 0 && q.length >= 3 && t.length >= 3) {
-            const d = levenshteinCapped(q, t)
-            const acceptable =
-              (d === 1 && Math.min(q.length, t.length) >= 3) ||
-              (d === 2 && Math.min(q.length, t.length) >= 5)
-            if (acceptable) {
-              s = d === 1 ? 1.6 : 1
-            }
-          }
-          if (s > best) {
-            best = s
-          }
-        }
-        score += best
-      }
-      return { entry, score }
-    })
-    .filter((r) => r.score > 0)
-    .sort(
-      (a, b) => b.score - a.score || a.entry.path.length - b.entry.path.length,
-    )
-    .slice(0, top)
-  return scored.map((r) => ({
-    path: r.entry.path,
-    description: r.entry.description,
-  }))
+  // Pre-sort by path length so the stable rank ties resolve shorter-path-
+  // first, exactly as the original bespoke comparator did.
+  const index = buildCommandIndex(program).sort(
+    (a, b) => a.path.length - b.path.length,
+  )
+  return rankCandidates(tokens, index, (entry) => entry.tokens, { top }).map(
+    (r) => ({
+      path: r.item.path,
+      description: r.item.description,
+    }),
+  )
 }
