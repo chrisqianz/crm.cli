@@ -17,7 +17,8 @@ import { Command } from 'commander'
 import { buildProgram } from '../../src/cli'
 import { tokenize } from '../../src/repl/lex'
 import type { ReplContext, ReplIo } from '../../src/repl/repl'
-import { handleLine, runRepl, statusLine } from '../../src/repl/repl'
+import { handleLine, runRepl } from '../../src/repl/repl'
+import { statusLine } from '../../src/repl/session'
 import {
   bootstrapOwner,
   CRM as CRM_BIN,
@@ -610,4 +611,56 @@ describe('REPL completion & next-actions (task 4)', () => {
     )
     expect(badExec.out).not.toContain('· next:')
   }, 60_000)
+})
+
+describe('REPL macros (task 5)', () => {
+  const today = (() => {
+    const d = new Date()
+    const p = (n: number) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  })()
+
+  test('today prints the four sections in order, task under due today', async () => {
+    const db = freshDb('today.db')
+    const r = await repl(
+      [`task add "Ship it" --due ${today}`, 'today', 'q'],
+      ['--db', db],
+    )
+    expect(r.code).toBe(0)
+    const iDue = r.out.indexOf('— due today —')
+    const iOver = r.out.indexOf('— overdue —')
+    const iPipe = r.out.indexOf('— pipeline —')
+    const iStale = r.out.indexOf('— stale —')
+    expect(iDue).toBeGreaterThan(-1)
+    expect(iOver).toBeGreaterThan(iDue)
+    expect(iPipe).toBeGreaterThan(iOver)
+    expect(iStale).toBeGreaterThan(iPipe)
+    const iShip = r.out.indexOf('Ship it', iDue)
+    expect(iShip).toBeGreaterThan(-1)
+    expect(iShip).toBeLessThan(iOver)
+  }, 45_000)
+
+  test('done lists due tasks, picks by number, marks it done', async () => {
+    const db = freshDb('done.db')
+    const seed = await repl(
+      [`task add "Ship it" --due ${today}`, 'q'],
+      ['--db', db],
+    )
+    expect(seed.code).toBe(0)
+    const r = await repl(['done', '1', 'task list', 'q'], ['--db', db])
+    expect(r.code).toBe(0)
+    // the pick list showed it…
+    expect(r.out).toContain('Ship it')
+    // …task done confirmed with "<id> done"…
+    expect(r.out).toMatch(/tk_\S+ done/)
+    // …and the follow-up open list no longer contains it: exactly one mention
+    expect(r.out.split('Ship it').length - 1).toBe(1)
+  }, 45_000)
+
+  test('done with nothing due says so and asks for nothing', async () => {
+    const db = freshDb('done-empty.db')
+    const r = await repl(['done', 'q'], ['--db', db])
+    expect(r.code).toBe(0)
+    expect(r.out.toLowerCase()).toContain('nothing due')
+  }, 45_000)
 })

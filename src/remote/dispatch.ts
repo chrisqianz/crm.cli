@@ -160,7 +160,18 @@ export function remoteEndpoint(): RemoteEndpoint | null {
   return resolved
 }
 
+/**
+ * Is there anywhere to send a request at all? Background prefetch (the ref
+ * cache warming its planes at start) uses this to stay silent: an
+ * unlogged-in human opening `crm` must not be greeted by two error lines
+ * for a fetch they never asked for. Offline is a state, not an error.
+ */
+export function hasEndpoint(): boolean {
+  return resolveEndpoint() !== 'unresolved'
+}
+
 let client: RpcClient | null = null
+let clientServer: string | null = null
 
 /** Parse "host:port" (port optional, defaults to 8443). */
 function parseServerAddr(server: string): { host: string; port: number } {
@@ -175,22 +186,68 @@ function parseServerAddr(server: string): { host: string; port: number } {
   return { host: server.slice(0, lastColon), port }
 }
 
+let keepAlive = false
+
+/** The REPL keeps one TLS connection for its whole life; a one-shot CLI
+ * process gains nothing from caching, so this stays off by default. */
+export function setDispatchKeepAlive(on: boolean): void {
+  keepAlive = on
+}
+
+/** Drop the cached connection (log out, endpoint switch, tests). */
+export function closeDispatchClient(): void {
+  client?.close()
+  client = null
+  clientServer = null
+}
+
 async function getRemoteClient(ep: RemoteEndpoint): Promise<RpcClient> {
+  const { host, port } = parseServerAddr(ep.server)
+  const key = `${host}:${port}`
+  // A cached client for a different server must never be reused — the
+  // credential below belongs to whoever is logged in *now*.
+  if (client && clientServer !== key) {
+    closeDispatchClient()
+  }
   if (client) {
     return client
   }
-  const { host, port } = parseServerAddr(ep.server)
   const c = await RpcClient.connect(port, host, {
     insecure: ep.insecure,
   })
+  client = c
+  clientServer = key
   const token = process.env.CRM_TOKEN || loadSession()?.token || undefined
   if (!token) {
-    c.close()
+    closeDispatchClient()
     die('Error: no token for remote session — run `crm login` or set CRM_TOKEN')
   }
-  await c.call('auth.token', { token })
-  client = c
+  try {
+    await c.call('auth.token', { token })
+  } catch (e) {
+    // A rejected credential is an RpcError, not transport damage: dropping
+    // the socket here would make the reconnect below retry the same
+    // rejection with the same token.
+    closeDispatchClient()
+    throw e
+  }
   return c
+}
+
+/** One call; the socket is closed again unless the REPL asked to keep it. */
+async function callOnce(
+  ep: RemoteEndpoint,
+  method: string,
+  params: Record<string, unknown>,
+): Promise<unknown> {
+  const c = await getRemoteClient(ep)
+  try {
+    return await c.call(method, params)
+  } finally {
+    if (!keepAlive) {
+      closeDispatchClient()
+    }
+  }
 }
 
 /**
@@ -203,20 +260,33 @@ export async function dispatch<
 >(method: string, params: Record<string, unknown>): Promise<T> {
   const ep = remoteEndpoint()
   if (ep) {
-    const c = await getRemoteClient(ep)
+    const isRpcError = (e: unknown): e is RpcError => e instanceof RpcError
     try {
-      return await c.call<T>(method, params)
+      try {
+        return (await callOnce(ep, method, params)) as T
+      } catch (e) {
+        if (isRpcError(e)) {
+          // exit 3 = conflict: recoverable, expected in a shared environment.
+          // A structured server answer is never retried — a second attempt
+          // would only ask the server to say the same thing again.
+          die(e.message, e.code === 'CONFLICT' ? 3 : 1)
+        }
+        // Transport-level failure (dead cached socket, dropped connection):
+        // reconnect and retry exactly once.
+        closeDispatchClient()
+        return (await callOnce(ep, method, params)) as T
+      }
     } catch (e) {
-      if (e instanceof RpcError) {
-        // exit 3 = conflict: recoverable, expected in a shared environment
+      if (isRpcError(e)) {
         die(e.message, e.code === 'CONFLICT' ? 3 : 1)
       }
       throw e
     } finally {
-      // CLI processes run one command per invocation — release the TLS
-      // socket so the event loop can drain and the process exits cleanly.
-      c.close()
-      client = null
+      if (!keepAlive) {
+        // CLI processes run one command per invocation — release the TLS
+        // socket so the event loop can drain and the process exits cleanly.
+        closeDispatchClient()
+      }
     }
   }
 

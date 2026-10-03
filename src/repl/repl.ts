@@ -1,13 +1,11 @@
 import { homedir } from 'node:os'
-import { basename } from 'node:path'
 import { createInterface } from 'node:readline'
 
 import type { Command } from 'commander'
 
 import { promptSecret } from '../lib/prompt'
-import { loadSession } from '../lib/session'
 import { rankCandidates, scoreToken } from '../lib/suggest'
-import { dispatch } from '../remote/dispatch'
+import { dispatch, hasEndpoint } from '../remote/dispatch'
 import { RefCache } from './cache'
 import {
   applyBunCompletion,
@@ -18,6 +16,7 @@ import {
 import { callGuarded, execGuarded } from './guard'
 import { tokenize } from './lex'
 import { type Entity, type Intent, parseReplLine } from './parser'
+import { knownServer, statusLine } from './session'
 import { type Ask, type FieldOption, runWizard, WizardAbort } from './wizard'
 
 const PROMPT = 'crm> '
@@ -81,29 +80,6 @@ export async function handleLine(
   return parseReplLine(parseTokens(text), { program: ctx.program })
 }
 
-/** Where this session's data would come from: a local db, a server, or neither. */
-export function statusLine(ctx: ReplContext): string {
-  const db = flagValue(ctx.entryArgv, '--db')
-  if (db) {
-    return `local:${basename(db)}`
-  }
-  const session = loadSession()
-  if (session) {
-    return session.username
-      ? `${session.username}@${session.server} ✓`
-      : `${session.server} ✓`
-  }
-  return 'not logged in'
-}
-
-/** The separated form is the only one that can reach the REPL: the argv
- * pre-parser strips `--db <path>` and nothing else, so `--db=x.db` never
- * empties `cleanArgv` and never opens a session at all. */
-function flagValue(argv: string[], flag: string): string | undefined {
-  const i = argv.indexOf(flag)
-  return i >= 0 ? argv[i + 1] : undefined
-}
-
 /** Commander argv a session word maps to; null means the loop itself handles
  * it. Total over the op union so a Task-2 addition cannot land as a silent
  * no-op here. */
@@ -116,10 +92,11 @@ function sessionArgv(
     case 'logout':
       return ['logout']
     case 'whoami':
-    case 'login':
-      // Task 2 routes these here as they enter the grammar; the commands
-      // already exist, so forwarding argv is all the loop has to do.
       return [op]
+    case 'login':
+      // The wizard below collects the answers and hands the real login
+      // command a complete argv — password-posting is never reimplemented.
+      return null
     case 'quit':
     case 'status':
       // The loop's own words: no command to run.
@@ -240,6 +217,12 @@ export async function runRepl(
   // hand-maintained list, so neither can drift from what the CLI accepts.
   const refCache = new RefCache(async (entity) => {
     if (entity === 'log') {
+      return []
+    }
+    // Prefetch stays silent: with no server and no database configured,
+    // dispatch() would die() with NOT_CONNECTED — copy meant for a command
+    // the human actually ran, not for a background warm of a fresh REPL.
+    if (!hasEndpoint()) {
       return []
     }
     const g = await callGuarded(() =>
@@ -430,8 +413,19 @@ export async function runRepl(
       return a === null ? null : a.trim()
     },
     async secret(q) {
-      // Password-like answers never ride the line queue or history. No
-      // secret field exists yet; the plumbing is here for when one does.
+      // Password-like answers never ride the line queue or history. On a
+      // pipe there is nothing to hide behind — the terminal was never in
+      // raw mode and the feeder can see the line anyway — so echo the
+      // prompt like every other question; scripted logins read it as the
+      // cue to paste. A TTY still gets the masked prompt.
+      if (!terminal) {
+        say(q)
+        const a = await nextLine()
+        if (a === null) {
+          throw new WizardAbort('input ended during a secret prompt')
+        }
+        return a.trim()
+      }
       return await promptSecret(q)
     },
     async pick(q, options) {
@@ -511,6 +505,39 @@ export async function runRepl(
           showPrompt()
           continue
         }
+        if (intent.op === 'login') {
+          // The server question is skipped when one is already known — the
+          // session file or CRM_SERVER — because the human just said login,
+          // not login-somewhere-else.
+          const server = knownServer() ?? (await ask.line('server (host:port)'))
+          if (!server) {
+            break
+          }
+          const username = await ask.line('username')
+          if (!username) {
+            break
+          }
+          const password = await ask.secret('password')
+          // Reuse the real command wholesale: token exchange and session
+          // file writes stay in one place. `crm --insecure` at the door
+          // (entry argv) is carried into the hand — a self-signed dev
+          // server stays reachable without repeating the flag per line.
+          await runHanded([
+            'login',
+            '--server',
+            server,
+            '--username',
+            username,
+            '--password',
+            password,
+            // no --insecure carry: `login` reads the same live gInsecure the
+            // door argv set (`!!opts.insecure || gInsecure`), in-process.
+          ])
+          // A fresh identity changes what the ref planes can see.
+          refCache.warmStart().catch(() => undefined)
+          showPrompt()
+          continue
+        }
         const argv = sessionArgv(intent.op)
         if (argv) {
           await runHanded(argv)
@@ -573,10 +600,49 @@ export async function runRepl(
         continue
       }
       if (intent.kind === 'macro') {
-        // Task 5 executes today/done; meanwhile the commands work.
-        say(
-          'today/done land in the next drop — meanwhile: task list, report pipeline',
-        )
+        if (intent.name === 'today') {
+          const sections: [string, string[]][] = [
+            ['due today', ['task', 'list', '--due-today']],
+            ['overdue', ['task', 'list', '--overdue']],
+            ['pipeline', ['report', 'pipeline']],
+            ['stale', ['report', 'stale']],
+          ]
+          for (const [header, argv] of sections) {
+            say(dim(`— ${header} —`))
+            await runHanded(argv)
+          }
+        } else {
+          const g = await callGuarded(() =>
+            dispatch<{ rows: Record<string, unknown>[] }>('task.list', {
+              dueToday: true,
+            }),
+          )
+          const rows = g.ok && g.value ? (g.value.rows ?? []) : []
+          if (!g.ok) {
+            ctx.lastErrored = true
+            say(dim('· offline or unreachable — cannot check what is due'))
+          } else if (rows.length === 0) {
+            say('nothing due today — nice')
+          } else {
+            const labels = rows.map((r) =>
+              String(r.title ?? r.id ?? '(untitled)'),
+            )
+            let n: number
+            try {
+              n = await ask.pick('done which?', labels)
+            } catch (e) {
+              if (e instanceof WizardAbort) {
+                break
+              }
+              throw e
+            }
+            await runHanded([
+              'task',
+              'done',
+              String(rows[n].id ?? rows[n].title),
+            ])
+          }
+        }
         showPrompt()
         continue
       }
