@@ -4,11 +4,13 @@ import { createInterface } from 'node:readline'
 
 import type { Command } from 'commander'
 
+import { promptSecret } from '../lib/prompt'
 import { loadSession } from '../lib/session'
 import { rankCandidates, scoreToken } from '../lib/suggest'
 import { dispatch } from '../remote/dispatch'
 import { callGuarded, execGuarded } from './guard'
-import { type Intent, parseReplLine } from './parser'
+import { type Entity, type Intent, parseReplLine } from './parser'
+import { type Ask, type FieldOption, runWizard, WizardAbort } from './wizard'
 
 const PROMPT = 'crm> '
 const BANNER = 'crm interactive REPL — ? for help, q to quit'
@@ -338,6 +340,99 @@ export async function runRepl(
     }
   }
 
+  // Wizard plumbing: questions ride the same readline, entity fields search
+  // live rows through dispatch — so the wizard works identically local and
+  // remote, and piped sessions script their answers like any other line.
+  const optionsCache = new Map<string, FieldOption[]>()
+  async function fetchOptions(
+    entity: Entity,
+    query: string,
+  ): Promise<FieldOption[]> {
+    const cacheKey = `${entity} ${query.toLowerCase()}`
+    const cached = optionsCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
+    const g = await callGuarded(() =>
+      dispatch<{ rows: Record<string, unknown>[] }>(`${entity}.list`, {
+        limit: '200',
+      }),
+    )
+    let opts: FieldOption[] = []
+    if (g.ok && g.value) {
+      const linkFlag: Record<Entity, string> = {
+        contact: '--contact',
+        company: '--company',
+        deal: '--deal',
+        log: '',
+        task: '--task',
+      }
+      const ranked = rankCandidates(
+        [query],
+        g.value.rows ?? [],
+        (row) => {
+          const label = String(row.name ?? row.title ?? '')
+          return label ? [label, String(row.id ?? '')] : [String(row.id ?? '')]
+        },
+        { score: openWordScore, top: 8 },
+      )
+      opts = ranked
+        .filter((c) => c.score > 0)
+        .map(({ item: row }) => {
+          const id = String(row.id ?? '')
+          const label = String(row.name ?? row.title ?? id)
+          return {
+            display: `${label} (${id.slice(0, 12)})`,
+            value: id,
+            flag: linkFlag[entity],
+          }
+        })
+    }
+    if (optionsCache.size > 64) {
+      optionsCache.clear() // blunt, but a long session must not grow unbounded
+    }
+    optionsCache.set(cacheKey, opts)
+    return opts
+  }
+
+  const ask: Ask = {
+    async line(q) {
+      if (terminal) {
+        rl.setPrompt(`${q} `)
+        rl.prompt()
+      } else {
+        output.write(`${q} `)
+      }
+      const a = await nextLine()
+      if (terminal) {
+        rl.setPrompt(PROMPT)
+      }
+      return a === null ? null : a.trim()
+    },
+    async secret(q) {
+      // Password-like answers never ride the line queue or history. No
+      // secret field exists yet; the plumbing is here for when one does.
+      return await promptSecret(q)
+    },
+    async pick(q, options) {
+      say(q)
+      for (const [i, o] of options.entries()) {
+        say(`  ${i + 1}. ${o}`)
+      }
+      for (;;) {
+        const a = await ask.line('number')
+        if (a === null) {
+          throw new WizardAbort('input ended during the wizard')
+        }
+        const n = Number(a)
+        if (Number.isInteger(n) && n >= 1 && n <= options.length) {
+          return n - 1
+        }
+        say(`  pick 1-${options.length}`)
+      }
+    },
+  }
+
   say(BANNER)
   showPrompt()
   try {
@@ -427,10 +522,28 @@ export async function runRepl(
         continue
       }
       if (intent.kind === 'wizard') {
-        // Task 3 wires the prompts; until then the one-shot form works.
-        say(
-          'the wizard lands in the next drop — meanwhile: contact add Ada --email a@x.io',
-        )
+        let w: { entity: Entity; argv: string[] }
+        try {
+          w = await runWizard(
+            intent.entity,
+            intent.verb,
+            intent.given,
+            ask,
+            fetchOptions,
+            undefined,
+            async (entity, ref) => {
+              // Edit starts by showing what is there — "keeps current"
+              // needs something visible to keep.
+              await runHanded([entity, 'show', ref])
+            },
+          )
+        } catch (e) {
+          if (e instanceof WizardAbort) {
+            break // stdin ended mid-question: just a normal goodbye
+          }
+          throw e
+        }
+        await runHanded(w.argv)
         showPrompt()
         continue
       }

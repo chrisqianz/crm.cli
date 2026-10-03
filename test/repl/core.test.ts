@@ -430,3 +430,67 @@ describe('REPL grammar (task 2)', () => {
     expect(r.code).toBe(0)
   }, 45_000)
 })
+
+describe('REPL wizard (task 3)', () => {
+  const dbPath = () => join(mkdtempSync(join(tmpdir(), 'crm-repl-w')), 'w.db')
+
+  test('a bare add walks entity, name, and the optional fields', async () => {
+    const db = dbPath()
+    const r = await repl(
+      ['new', 'contact', 'Ada L', 'ada@x.io', '', '', '', '', 'q'],
+      ['--db', db],
+    )
+    expect(r.out).toContain('which entity')
+    expect(r.out).toMatch(/ct_[0-9A-Z]{20,}/)
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('a prefilled name is never asked again', async () => {
+    const db = dbPath()
+    const r = await repl(
+      ['add contact AdaQ', '', '', '', '', 'q'],
+      ['--db', db],
+    )
+    expect(r.out).toMatch(/ct_[0-9A-Z]{20,}/)
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('log one-liner: body prefilled, Enter takes the default type', async () => {
+    const db = dbPath()
+    const r = await repl(
+      ['log phoned lia about pricing', '', '', 'activity list', 'q'],
+      ['--db', db],
+    )
+    expect(r.out).toContain('phoned lia about pricing')
+    expect(r.out).toContain('note')
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('edit shows the record first and Enter everywhere changes nothing', async () => {
+    const db = dbPath()
+    const r = await repl(
+      [
+        'contact add Vera --email v@x.io',
+        'edit contact Vera',
+        '',
+        '',
+        '',
+        '',
+        '',
+        'q',
+      ],
+      ['--db', db],
+    )
+    expect(r.out).toContain('v@x.io') // the current record printed first
+    expect(`${r.out}${r.err}`.toLowerCase()).not.toContain('unknown command')
+    expect(r.code).toBe(0)
+  }, 45_000)
+
+  test('stdin ending mid-wizard is a clean goodbye, not a crash', async () => {
+    const db = dbPath()
+    const r = await repl(['new', 'contact', 'Halfway'], ['--db', db])
+    expect(r.code).toBe(0)
+    expect(`${r.out}${r.err}`).not.toContain('WizardAbort')
+    expect(r.err).not.toContain('Unhandled')
+  }, 45_000)
+})
