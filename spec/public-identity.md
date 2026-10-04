@@ -74,6 +74,22 @@ they see.
   admin port enlarges the attack surface. This is a deliberate
   product decision, not an omission.
 
+## As-built notes
+
+- A shipped as commit `4e927d8` (+ `a334194` test isolation, `85acada`
+  spec). The advertised value is computed once in `commands/serve.ts`
+  (`config.serve.public_host || bindHost`, `public_port || bound port`)
+  and flows into every surface; absent fields are byte-identical to the
+  old behavior (covered by the bind-derived regression test).
+- B shipped as commit `40dac65`. `configView` is the single serializer;
+  `renderSanitizedToml` never touches secret material (it only names the
+  environment variable and whether it is set), so the console cannot
+  leak what the view does not carry. The console renders the TOML block
+  from the server-rendered string — no client-side re-serialization.
+- Side fix from live testing: `test/enterprise/config-trust.test.ts`
+  learned HOME isolation — a saved host session flipped its local-mode
+  `contact list` to remote mode (commit `a334194`).
+
 ## Out of scope
 
 - Config hot-reload (prerequisite for any console write path).

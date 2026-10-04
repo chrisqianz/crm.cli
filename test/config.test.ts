@@ -679,6 +679,8 @@ describe('config resolution', () => {
     )
 
     // Run without --db flag — should use config's database path.
+    // HOME is isolated: a saved host session in ~/.crm would flip this
+    // process into remote mode and no local DB file would be created.
     const proc = Bun.spawnSync(
       [
         'bun',
@@ -689,7 +691,16 @@ describe('config resolution', () => {
         '--name',
         'Jane',
       ],
-      { cwd: ctx.dir, env: { ...process.env, NO_COLOR: '1' } },
+      {
+        cwd: ctx.dir,
+        env: {
+          ...process.env,
+          NO_COLOR: '1',
+          HOME: join(ctx.dir, 'home'),
+          CRM_DB: '',
+          CRM_CONFIG: '',
+        },
+      },
     )
     expect(proc.exitCode).toBe(0)
 
