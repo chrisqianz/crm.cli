@@ -122,17 +122,19 @@ export function registerServeCommand(program: Command): void {
           const addr = server.address()
           if (addr && typeof addr === 'object') {
             // Client-reachable address, not the bind interface: nobody can
-            // dial 0.0.0.0. Used for the client hint below and for the
-            // generated client config.
-            const rpcHost =
+            // dial 0.0.0.0. D-A: an explicit public identity wins — the
+            // bind-derived value is only the fallback for dev servers.
+            const bindHost =
               host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
+            const rpcHost = config.serve.public_host || bindHost
+            const rpcPort = config.serve.public_port || addr.port
             console.log(
               `crm serve listening on ${host === '0.0.0.0' || host === '::' ? '0.0.0.0' : host}:${addr.port} (DB: ${config.database.path})`,
             )
             // Nothing discovers this server: a client has to be told the
             // address, and the host's own commands need the database named
             // (spec/client-repl.md A1/A2). Say both while we have a TTY.
-            console.log(`clients: crm login ${rpcHost}:${addr.port}`)
+            console.log(`clients: crm login ${rpcHost}:${rpcPort}`)
             console.log(
               `this host: [database] path = "${config.database.path}" in crm.toml, or pass --db`,
             )
@@ -152,7 +154,7 @@ export function registerServeCommand(program: Command): void {
                 host: opts.adminHost ?? host,
                 port: Number(opts.adminPort),
                 rpcHost,
-                rpcPort: addr.port,
+                rpcPort,
                 rpcInsecure,
               })
             }

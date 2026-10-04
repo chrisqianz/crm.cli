@@ -132,7 +132,21 @@ export interface CRMConfig {
   phone: { default_country?: string; display: string }
   pipeline: { stages: string[]; won_stage: string; lost_stage: string }
   remote: { server: string; insecure: boolean }
-  serve: { port: number; host: string; cert: string; key: string }
+  serve: {
+    port: number
+    host: string
+    cert: string
+    key: string
+    /**
+     * D-A: publicly reachable host for client onboarding (console
+     * Clients tab, /download/crm.toml, install.sh, startup hint).
+     * Empty = derive from the bind interface (0.0.0.0 → 127.0.0.1),
+     * which is wrong for the standard enterprise topology.
+     */
+    public_host: string
+    /** Same as public_host but for the port (e.g. behind a proxy). */
+    public_port: number
+  }
 }
 
 export const SEARCH_MODEL = 'mxbai-embed-xsmall-v1'
@@ -162,7 +176,14 @@ function defaultConfig(): CRMConfig {
     phone: { display: 'international' },
     remote: { server: '', insecure: false },
     mail: { host: '', port: 587, user: '', from: '', secure: false },
-    serve: { port: 8443, host: '127.0.0.1', cert: '', key: '' },
+    serve: {
+      port: 8443,
+      host: '127.0.0.1',
+      cert: '',
+      key: '',
+      public_host: '',
+      public_port: 0,
+    },
     auth: {
       lockout_threshold: 5,
       lockout_minutes: 15,
@@ -276,7 +297,14 @@ interface ConfigOverride {
   phone?: { default_country?: string; display?: string }
   pipeline?: { stages?: string[]; won_stage?: string; lost_stage?: string }
   remote?: { server?: string; insecure?: boolean }
-  serve?: { port?: number; host?: string; cert?: string; key?: string }
+  serve?: {
+    port?: number
+    host?: string
+    cert?: string
+    key?: string
+    public_host?: string
+    public_port?: number
+  }
 }
 
 function mergeConfig(base: CRMConfig, override: ConfigOverride): CRMConfig {
@@ -359,6 +387,12 @@ function mergeConfig(base: CRMConfig, override: ConfigOverride): CRMConfig {
       ...(override.serve.host ? { host: override.serve.host } : {}),
       ...(override.serve.cert ? { cert: override.serve.cert } : {}),
       ...(override.serve.key ? { key: override.serve.key } : {}),
+      ...(override.serve.public_host
+        ? { public_host: override.serve.public_host }
+        : {}),
+      ...(override.serve.public_port
+        ? { public_port: override.serve.public_port }
+        : {}),
     }
   }
   if (override.auth) {
