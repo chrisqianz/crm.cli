@@ -45,10 +45,22 @@ export function registerLoginCommands(program: Command): void {
             'No server configured. Use --server <host:port> or set CRM_SERVER.',
           )
         }
-        const username =
-          opts.username ??
-          loadSession()?.username ??
-          (await promptLine('Username: '))
+        // A saved username is a suggestion, never a silent decision: the
+        // prompt shows it as the default and a bare Enter keeps it, but
+        // the human always sees which account they are authenticating as
+        // and can type a different one. Non-TTY (piped/automated) keeps
+        // the machine behavior of reusing the saved user without reading
+        // a stdin line that was meant for something else.
+        const savedUser = loadSession()?.username
+        let username: string | undefined = opts.username
+        if (username === undefined && savedUser !== undefined) {
+          username = process.stdin.isTTY
+            ? (await promptLine(`Username (${savedUser}): `)) || savedUser
+            : savedUser
+        }
+        if (username === undefined) {
+          username = await promptLine('Username: ')
+        }
         const password = opts.password ?? (await promptSecret('Password: '))
         const insecure = !!opts.insecure || gInsecure
         const client = await RpcClient.connect(port, host, {

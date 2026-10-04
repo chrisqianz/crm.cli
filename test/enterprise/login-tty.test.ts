@@ -10,7 +10,7 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -32,7 +32,10 @@ interface Pty {
   send: (text: string) => void
 }
 
-function ptyLogin(args: string[]): Pty {
+function ptyLogin(
+  args: string[],
+  opts: { seed?: (home: string) => void } = {},
+): Pty {
   let screen = ''
   const decode = new TextDecoder()
   const term = new Bun.Terminal({
@@ -43,6 +46,7 @@ function ptyLogin(args: string[]): Pty {
     },
   })
   const home = mkdtempSync(join(tmpdir(), 'crm-tty-home-'))
+  opts.seed?.(home)
   const proc = Bun.spawn(['bun', 'run', CRM, 'login', ...args], {
     terminal: term,
     env: {
@@ -146,6 +150,53 @@ describe('crm login at a real terminal', () => {
       ).toBe(true)
       session.send(`${owner.password}\n`)
       await expectFinished(session, owner.username)
+    } finally {
+      try {
+        session.proc.kill(9)
+      } catch {
+        // already gone
+      }
+    }
+  }, 90_000)
+
+  test('a saved session names its user before the password prompt', async () => {
+    // Live-testing regression: with a saved session, login silently reused
+    // its username and jumped straight to the password prompt — the human
+    // had no idea which account they were about to authenticate, and no
+    // way to log in as someone else without --username.
+    if (!server) {
+      server = await startServer(db.dbPath)
+      await bootstrapOwner(server)
+    }
+    const srv = server
+    const session = ptyLogin(['--server', `127.0.0.1:${srv.port}`], {
+      seed: (home) => {
+        mkdirSync(join(home, '.crm'))
+        writeFileSync(
+          join(home, '.crm', 'credentials'),
+          JSON.stringify({
+            server: `127.0.0.1:${srv.port}`,
+            username: 'owner',
+            token: 'stale-token',
+          }),
+        )
+      },
+    })
+    try {
+      // the saved username must be VISIBLE as the default, not invisible
+      expect(
+        await settled(
+          () => session.screen().includes('Username (owner)'),
+          10_000,
+        ),
+      ).toBe(true)
+      // bare Enter keeps the saved user and proceeds to the password
+      session.send('\n')
+      expect(
+        await settled(() => /password/i.test(session.screen()), 10_000),
+      ).toBe(true)
+      session.send('Owner-pass-123\n')
+      await expectFinished(session, 'owner')
     } finally {
       try {
         session.proc.kill(9)
