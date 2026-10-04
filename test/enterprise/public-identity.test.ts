@@ -6,6 +6,8 @@
  * Absent fields reproduce the bind-derived behavior exactly.
  */
 import { describe, expect, test } from 'bun:test'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import {
   bootstrapOwner,
@@ -213,6 +215,24 @@ install_source = "git+https://git.corp.internal/crm/crm-cli.git"
       },
     )
   }, 60_000)
+})
+
+describe('installability: git installs must create the crm command', () => {
+  // Live-testing regression: the bin pointed at dist/cli.js, a build
+  // artifact that never lands in git. bun creates bin links before
+  // postinstall runs, so git installs silently produced no `crm`
+  // command. The bin target must be a file that ships in the repo.
+  test('package.json bin target exists in the repo and dist stays the real entry', () => {
+    const pkg = JSON.parse(
+      readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8'),
+    )
+    const binPath = pkg.bin.crm
+    expect(binPath).toBeTruthy()
+    // the target must be committed — a path under dist/ would not
+    // exist in a fresh clone
+    expect(binPath).not.toMatch(/^\.?\/?dist\//)
+    expect(existsSync(join(import.meta.dir, '..', '..', binPath))).toBe(true)
+  })
 })
 
 describe('config surface completion (D-B)', () => {

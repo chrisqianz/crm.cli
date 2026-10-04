@@ -10,9 +10,10 @@
   },
   "type": "module",
   "bin": {
-    "crm": "./dist/cli.js"
+    "crm": "bin/crm.js"
   },
   "files": [
+    "bin",
     "dist",
     "README.md",
     "LICENSE"
