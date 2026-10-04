@@ -85,8 +85,13 @@ export class RpcClient {
     })
   }
 
+  /** End the write side, then destroy the socket outright: a plain `end()`
+   * leaves the socket readable until the peer closes (minutes, under the
+   * server's idle timeout), which holds the event loop open and parks a
+   * half-open slot on the server's connection cap. */
   close(): void {
     this.socket.end()
+    this.socket.destroy()
   }
 
   private onData(chunk: Buffer): void {

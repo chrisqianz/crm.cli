@@ -5,7 +5,12 @@ import type { Command } from 'commander'
 
 import { promptSecret } from '../lib/prompt'
 import { rankCandidates, scoreToken } from '../lib/suggest'
-import { dispatch, hasEndpoint } from '../remote/dispatch'
+import {
+  closeDispatchClient,
+  dispatch,
+  hasEndpoint,
+  setDispatchKeepAlive,
+} from '../remote/dispatch'
 import { RefCache } from './cache'
 import {
   applyBunCompletion,
@@ -448,6 +453,10 @@ export async function runRepl(
   }
 
   say(BANNER)
+  // The REPL keeps one TLS connection for the whole session — warm
+  // fetches, commands, and the completion plane all ride it — and the
+  // finally below closes it, so a piped session can actually exit.
+  setDispatchKeepAlive(true)
   // the two planes a human reaches for first; a failed warm stays silent
   refCache.warmStart().catch(() => undefined)
   showPrompt()
@@ -541,6 +550,12 @@ export async function runRepl(
         const argv = sessionArgv(intent.op)
         if (argv) {
           await runHanded(argv)
+        }
+        if (intent.op === 'logout' && !ctx.lastErrored) {
+          // The saved session is gone; the live connection and the ref
+          // planes were built on top of it, so they go with it.
+          closeDispatchClient()
+          refCache.clear()
         }
         showPrompt()
         continue
@@ -656,6 +671,8 @@ export async function runRepl(
       showPrompt()
     }
   } finally {
+    setDispatchKeepAlive(false)
+    closeDispatchClient()
     handingOff = true
     rl.close()
     if (terminal) {

@@ -51,7 +51,14 @@ export class RefCache {
     this.data.delete(entity)
   }
 
-  /** The two planes a human hits within the first minute of a session. */
+  /** Forget every plane (logout / endpoint switch). */
+  clear(): void {
+    this.data.clear()
+  }
+
+  /** The two planes a human hits within the first minute of a session.
+   * Concurrent on purpose: dispatch's single-flight connect guard makes
+   * parallel warms share one connection instead of racing it. */
   async warmStart(): Promise<void> {
     await Promise.all([this.warm('contact'), this.warm('task')])
   }

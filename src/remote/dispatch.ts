@@ -172,6 +172,15 @@ export function hasEndpoint(): boolean {
 
 let client: RpcClient | null = null
 let clientServer: string | null = null
+// Bumped on every close: a connect that is still in flight when the
+// session changes (logout, endpoint switch) must not adopt its client.
+let generation = 0
+// Single-flight connect: concurrent callers share one in-flight connect
+// instead of racing it. Two racing connects both land; the later
+// assignment orphans the earlier socket (never closed — half-open on the
+// server until idle timeout, and enough to keep the process alive after
+// the REPL quits), and the loser's in-flight auth dies on the winner's
+// close, forcing the transport-retry on every parallel command.
 
 /** Parse "host:port" (port optional, defaults to 8443). */
 function parseServerAddr(server: string): { host: string; port: number } {
@@ -186,6 +195,7 @@ function parseServerAddr(server: string): { host: string; port: number } {
   return { host: server.slice(0, lastColon), port }
 }
 
+let clientConnecting: Promise<RpcClient> | null = null
 let keepAlive = false
 
 /** The REPL keeps one TLS connection for its whole life; a one-shot CLI
@@ -196,12 +206,13 @@ export function setDispatchKeepAlive(on: boolean): void {
 
 /** Drop the cached connection (log out, endpoint switch, tests). */
 export function closeDispatchClient(): void {
+  generation++
   client?.close()
   client = null
   clientServer = null
 }
 
-async function getRemoteClient(ep: RemoteEndpoint): Promise<RpcClient> {
+function getRemoteClient(ep: RemoteEndpoint): Promise<RpcClient> {
   const { host, port } = parseServerAddr(ep.server)
   const key = `${host}:${port}`
   // A cached client for a different server must never be reused — the
@@ -210,28 +221,48 @@ async function getRemoteClient(ep: RemoteEndpoint): Promise<RpcClient> {
     closeDispatchClient()
   }
   if (client) {
-    return client
+    return Promise.resolve(client)
   }
-  const c = await RpcClient.connect(port, host, {
-    insecure: ep.insecure,
-  })
-  client = c
-  clientServer = key
-  const token = process.env.CRM_TOKEN || loadSession()?.token || undefined
-  if (!token) {
-    closeDispatchClient()
-    die('Error: no token for remote session — run `crm login` or set CRM_TOKEN')
+  if (clientConnecting) {
+    return clientConnecting
   }
-  try {
-    await c.call('auth.token', { token })
-  } catch (e) {
-    // A rejected credential is an RpcError, not transport damage: dropping
-    // the socket here would make the reconnect below retry the same
-    // rejection with the same token.
-    closeDispatchClient()
-    throw e
-  }
-  return c
+  clientConnecting = (async () => {
+    const gen = generation
+    try {
+      const c = await RpcClient.connect(port, host, {
+        insecure: ep.insecure,
+      })
+      if (gen !== generation) {
+        // A closeDispatchClient raced the connect: this socket belongs to
+        // a session that no longer is. Drop it and fail the call so the
+        // retry path reconnects with the session that now exists.
+        c.close()
+        throw new RpcError('AUTH', 'session changed during connect')
+      }
+      client = c
+      clientServer = key
+      const token = process.env.CRM_TOKEN || loadSession()?.token || undefined
+      if (!token) {
+        closeDispatchClient()
+        die(
+          'Error: no token for remote session — run `crm login` or set CRM_TOKEN',
+        )
+      }
+      try {
+        await c.call('auth.token', { token })
+      } catch (e) {
+        // A rejected credential is an RpcError, not transport damage:
+        // dropping the socket here would make the reconnect below retry
+        // the same rejection with the same token.
+        closeDispatchClient()
+        throw e
+      }
+      return c
+    } finally {
+      clientConnecting = null
+    }
+  })()
+  return clientConnecting
 }
 
 /** One call; the socket is closed again unless the REPL asked to keep it. */
