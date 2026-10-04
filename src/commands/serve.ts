@@ -156,6 +156,7 @@ export function registerServeCommand(program: Command): void {
                 rpcHost,
                 rpcPort,
                 rpcInsecure,
+                installSource: config.serve.install_source,
               })
             }
           }

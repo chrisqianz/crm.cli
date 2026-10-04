@@ -146,6 +146,13 @@ export interface CRMConfig {
     public_host: string
     /** Same as public_host but for the port (e.g. behind a proxy). */
     public_port: number
+    /**
+     * What the generated install.sh uses as the install source, e.g.
+     * "git+ssh://git@corp.internal/crm/crm-cli.git" or an internal-registry
+     * package spec. Empty string = fall back to the public `crm.cli`
+     * package (which requires the release to be published there).
+     */
+    install_source: string
   }
 }
 
@@ -183,6 +190,7 @@ function defaultConfig(): CRMConfig {
       key: '',
       public_host: '',
       public_port: 0,
+      install_source: '',
     },
     auth: {
       lockout_threshold: 5,
@@ -304,6 +312,7 @@ interface ConfigOverride {
     key?: string
     public_host?: string
     public_port?: number
+    install_source?: string
   }
 }
 
@@ -392,6 +401,9 @@ function mergeConfig(base: CRMConfig, override: ConfigOverride): CRMConfig {
         : {}),
       ...(override.serve.public_port
         ? { public_port: override.serve.public_port }
+        : {}),
+      ...(override.serve.install_source
+        ? { install_source: override.serve.install_source }
         : {}),
     }
   }

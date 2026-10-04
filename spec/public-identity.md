@@ -26,6 +26,12 @@ public_port = 443             # optional; empty/absent = the actual bound port
 - When set, the advertised address is `public_host:public_port`
   (either may be set independently: `public_host` alone keeps the
   real bound port; `public_port` alone keeps the bind-derived host).
+- `[serve] install_source` (D-A2, added after live testing) controls
+  what `/download/install.sh` installs. `crm.cli` is not (yet) on
+  public npm — an enterprise server must be able to point the
+  bootstrap at its own mirror or git host. Empty/absent falls back to
+  `bun install -g crm.cli`, and the failure branch then names the
+  `install_source` fix instead of a generic mirror hint.
 - Propagation points (all share one computed value — no per-site logic):
   1. `serve` startup hint: `clients: crm login <advertised>`
   2. console Clients tab one-liner
@@ -86,6 +92,10 @@ they see.
   environment variable and whether it is set), so the console cannot
   leak what the view does not carry. The console renders the TOML block
   from the server-rendered string — no client-side re-serialization.
+- D-A2 shipped alongside the install.sh fix (see D-A2 paragraph above):
+  the install source is computed once in `installScript` and the
+  config view/TOML mirror it — same single-source pattern as the
+  advertised address.
 - Side fix from live testing: `test/enterprise/config-trust.test.ts`
   learned HOME isolation — a saved host session flipped its local-mode
   `contact list` to remote mode (commit `a334194`).

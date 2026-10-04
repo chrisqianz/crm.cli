@@ -151,6 +151,67 @@ public_port = 443
   }, 60_000)
 })
 
+describe('server-controlled client install source (D-A2)', () => {
+  test('install_source is injected into install.sh as the install command', async () => {
+    // crm.cli is not (yet) on public npm — an enterprise server must be
+    // able to point the bootstrap at its own mirror or git host.
+    await withServer(
+      `[serve]
+install_source = "git+ssh://git@corp.internal/crm/crm-cli.git"
+`,
+      async (server) => {
+        const sh = await download(
+          `http://127.0.0.1:${server.adminPort}`,
+          '/download/install.sh',
+        )
+        expect(sh).toContain(
+          'bun install -g git+ssh://git@corp.internal/crm/crm-cli.git',
+        )
+        // the default package name must not compete with the configured
+        // source
+        expect(sh).not.toContain('bun install -g crm.cli')
+      },
+    )
+  }, 60_000)
+
+  test('absent install_source falls back to the public package and names the fix', async () => {
+    await withServer(undefined, async (server) => {
+      const sh = await download(
+        `http://127.0.0.1:${server.adminPort}`,
+        '/download/install.sh',
+      )
+      expect(sh).toContain('bun install -g crm.cli')
+      // the failure branch must tell the operator how to fix it server-side
+      expect(sh).toContain('install_source')
+    })
+  })
+
+  test('config view surfaces install_source', async () => {
+    await withServer(
+      `[serve]
+install_source = "git+https://git.corp.internal/crm/crm-cli.git"
+`,
+      async (server, owner) => {
+        const base = `http://127.0.0.1:${server.adminPort}`
+        const login = await fetch(`${base}/api/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            username: owner.username,
+            password: owner.password,
+          }),
+        }).then((r) => r.json() as Promise<{ token: string }>)
+        const cfg = await fetch(`${base}/api/config`, {
+          headers: { authorization: `Bearer ${login.token}` },
+        }).then((r) => r.json() as Promise<{ serve: Record<string, unknown> }>)
+        expect(cfg.serve.install_source).toBe(
+          'git+https://git.corp.internal/crm/crm-cli.git',
+        )
+      },
+    )
+  }, 60_000)
+})
+
 describe('config surface completion (D-B)', () => {
   const CONFIG = `[serve]
 public_host = "crm.corp.example"
