@@ -441,8 +441,11 @@ if command -v crm >/dev/null 2>&1; then
   echo "crm.cli already installed: $(command -v crm)"
 elif command -v bun >/dev/null 2>&1; then
   echo "Installing crm.cli via bun…"
-  bunx --bun crm.cli@latest -- --version >/dev/null 2>&1 || true
-  echo "Note: pin crm.cli to your internal mirror; \`crm\` may need a manual install."
+  if ! bun install -g crm.cli; then
+    echo "WARN: bun install failed (offline? private registry?)." >&2
+    echo "      Pin crm.cli to your internal mirror, e.g.:" >&2
+    echo "      bun install -g <your-mirror-url-or-package>" >&2
+  fi
 else
   echo "Neither crm nor bun found — install crm.cli (bun install -g crm.cli) first."
 fi
@@ -455,6 +458,13 @@ insecure = ${ctx.rpcInsecure}
 TOML
 
 echo "Wrote $CFG"
-echo "Next: run  crm login   (username + password), then  crm contact list"
+if command -v crm >/dev/null 2>&1; then
+  echo "Installed: $(command -v crm)"
+  echo "Next: run  crm login   (username + password), then  crm contact list"
+else
+  echo "WARN: 'crm' is still not on PATH after the install attempt." >&2
+  echo "      On bun, global installs land in $(bun pm bin -g) — make sure that directory is on your PATH, e.g.:" >&2
+  echo '      Add to your shell profile:  echo "export PATH=$(bun pm bin -g):$PATH" >> ~/.profile' >&2
+fi
 `
 }

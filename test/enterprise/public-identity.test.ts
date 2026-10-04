@@ -100,6 +100,25 @@ public_host = "crm.corp.example"
     })
   })
 
+  test('install.sh actually installs crm and re-checks PATH', async () => {
+    // Live-testing regression: the script used `bunx crm.cli --version`,
+    // which runs the package once and never puts `crm` on PATH — the
+    // final `crm login` step then failed with "command not found".
+    await withServer(undefined, async (server) => {
+      const sh = await download(
+        `http://127.0.0.1:${server.adminPort}`,
+        '/download/install.sh',
+      )
+      // a real global install, not a one-shot runner
+      expect(sh).toContain('bun install -g crm.cli')
+      expect(sh).not.toContain('bunx')
+      // the script must not declare success while `crm` is missing:
+      // a final PATH check with an actionable warning
+      expect(sh).toContain('still not on PATH')
+      expect(sh).toContain('bun pm bin -g')
+    })
+  })
+
   test('config view surfaces the advertised address (or bind-derived)', async () => {
     await withServer(
       `[serve]
