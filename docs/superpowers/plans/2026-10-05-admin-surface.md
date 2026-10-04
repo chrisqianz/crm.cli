@@ -58,7 +58,7 @@ satisfies min-length 12). No new dependencies.
   `password_changed_at`), `src/db.ts` (`migrateSchema`),
   `src/server/handlers.ts` (registry case + `adminUserResetPassword` +
   stamp `password_changed_at` in `adminUserCreate`/bootstrap),
-  `src/commands/admin.ts` (`admin user reset-password <username>`)
+  `src/commands/admin.ts` (`admin user reset-password --username <name>`)
 - Test: `test/enterprise/password.test.ts` (new)
 
 **Interfaces:**
@@ -208,7 +208,7 @@ test('admin reset issues a one-time password that forces a change', async () => 
 
 **Files:**
 - Modify: `src/server/handlers.ts` (`adminUserDelete` + registry case),
-  `src/commands/admin.ts` (`admin user delete <username>`)
+  `src/commands/admin.ts` (`admin user delete --username <name>`)
 - Test: `test/enterprise/password.test.ts` (rename the file to
   `test/enterprise/users.test.ts`? — keep `password.test.ts` for B1 and
   add cases here, or new `test/enterprise/user-delete.test.ts`; choose
@@ -222,7 +222,7 @@ test('admin reset issues a one-time password that forces a change', async () => 
     → NULL (all rows, both tables)
   - audit `admin.user.delete`, entity `user/<id>`,
     `before_json` = public user row
-- CLI: `crm admin user delete <username>` — typed confirmation: prompts
+- CLI: `crm admin user delete --username <name>` — typed confirmation: prompts
   `Type the username to confirm: ` and compares (non-TTY → reads one line
   from stdin, same seam as the REPL secret echo). Wrong/empty →
   `Aborted.` exit 1, no delete.

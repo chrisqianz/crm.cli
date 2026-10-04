@@ -578,6 +578,7 @@ async function authBootstrap(
     locked_until: null,
     created_at: now,
     disabled_at: null,
+    password_changed_at: now,
   })
   await recordAudit(db, {
     actor_id: id,
@@ -715,6 +716,8 @@ function handleAdmin(
       return adminUserDisableEnable(db, ctx, identity, params, true)
     case 'admin.user.enable':
       return adminUserDisableEnable(db, ctx, identity, params, false)
+    case 'admin.user.reset-password':
+      return adminUserResetPassword(db, ctx, identity, params)
     case 'admin.token.create':
       return adminTokenCreate(db, ctx, identity, params)
     case 'admin.token.list':
@@ -769,6 +772,7 @@ async function adminUserCreate(
     locked_until: null,
     created_at: now,
     disabled_at: null,
+    password_changed_at: now,
   })
   const user = await findUser(db, username)
   if (!user) {
@@ -887,6 +891,52 @@ async function adminUserDisableEnable(
     after_json: JSON.stringify({ username, disabled: disable }),
   })
   return { user: publicUser(updated) }
+}
+
+async function adminUserResetPassword(
+  db: DB,
+  ctx: { ip: string },
+  identity: Identity,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const username = strParam(params, 'username')
+  const u = await findUser(db, username)
+  if (!u) {
+    throw new ServerError('NOT_FOUND', `no such user: ${username}`)
+  }
+  if (u.auth_source === 'ldap') {
+    // The directory is the password authority; a local reset would be
+    // shadowed on the next login and read as a working password that
+    // isn't. Refuse instead of writing a value that will lose.
+    throw new ServerError(
+      'INVALID',
+      `${u.username} authenticates against the directory — reset the password there, not here.`,
+    )
+  }
+  const temporaryPassword = generatePassword()
+  const now = new Date().toISOString()
+  await db
+    .update(schema.users)
+    .set({
+      password_hash: await hashPassword(temporaryPassword),
+      must_change_password: 1,
+      password_changed_at: now,
+      // a reset doubles as the unlock path
+      failed_attempts: 0,
+      locked_until: null,
+    })
+    .where(eq(schema.users.id, u.id))
+  await recordAudit(db, {
+    actor_id: identity.id,
+    actor_name: identity.username,
+    action: 'admin.user.reset-password',
+    source: 'rpc',
+    ip: ctx.ip,
+    entity_type: 'user',
+    entity_id: u.id,
+    after_json: JSON.stringify({ username, must_change_password: true }),
+  })
+  return { username, temporary_password: temporaryPassword }
 }
 
 async function adminTokenCreate(

@@ -117,7 +117,9 @@ CREATE TABLE IF NOT EXISTS users (
   failed_attempts INTEGER NOT NULL DEFAULT 0,
   locked_until TEXT,
   created_at TEXT NOT NULL,
-  disabled_at TEXT
+  disabled_at TEXT,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  password_changed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tokens (
@@ -253,6 +255,7 @@ async function migrateSchema(
     'SELECT owner, version, updated_by FROM deals LIMIT 0',
     'SELECT version, updated_by FROM companies LIMIT 0',
     'SELECT prev_hash, row_hash FROM audit_log LIMIT 0',
+    'SELECT must_change_password, password_changed_at FROM users LIMIT 0',
   ]
   let current = true
   for (const probe of probes) {
@@ -282,6 +285,13 @@ async function migrateSchema(
     // P9 data model: ownership + follow-up tasks
     ['contacts', 'owner', 'owner TEXT'],
     ['deals', 'owner', 'owner TEXT'],
+    // B1: password management (must-change flag + changed-at stamp)
+    [
+      'users',
+      'must_change_password',
+      'must_change_password INTEGER NOT NULL DEFAULT 0',
+    ],
+    ['users', 'password_changed_at', 'password_changed_at TEXT'],
   ]
   const seen = new Set<string>()
   for (const [table] of migrations) {

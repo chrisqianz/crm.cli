@@ -64,6 +64,8 @@ Set on: `admin.bootstrap`, `admin.user.create`, `admin.user.reset-password`,
 - Returns `{ username, temporary_password }` — the raw password is shown
   exactly once (CLI prints it; console displays it in a modal). Only its
   argon2id hash is stored.
+- CLI: `crm admin user reset-password --username <name>` (option form —
+  same machine-surface convention as the sibling admin user commands).
 - Audit row: `admin.user.reset-password`, entity `user/<id>`.
 
 ### B1.3 `auth.change-password { current, new }`
@@ -129,7 +131,7 @@ New rows: `admin.user.reset-password`, `auth.change-password`,
   is a P6 data-subject question, not this one).
 - Audit row: `admin.user.delete`, entity `user/<id>`, `before_json` = the
   public user row.
-- CLI: `crm admin user delete <username>` (typed confirmation, not a flag —
+- CLI: `crm admin user delete --username <name>` (typed confirmation, not a flag —
   the username must be re-typed).
 - Console: delete button, `confirm()` gate (B3).
 

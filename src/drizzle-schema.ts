@@ -104,6 +104,8 @@ export const users = sqliteTable('users', {
   locked_until: text('locked_until'),
   created_at: text('created_at').notNull(),
   disabled_at: text('disabled_at'),
+  must_change_password: integer('must_change_password').notNull().default(0),
+  password_changed_at: text('password_changed_at'),
 })
 
 export const tokens = sqliteTable('tokens', {

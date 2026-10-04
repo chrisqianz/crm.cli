@@ -246,6 +246,30 @@ export function registerAdminCommands(program: Command): void {
       })
     })
 
+  user
+    .command('reset-password')
+    .description(
+      'Reset a user password; prints a one-time temporary password (user is forced to change it at next login)',
+    )
+    .requiredOption('--username <name>', 'Username')
+    .option(
+      '--server <host:port>',
+      'Server address (default: CRM_SERVER or saved)',
+    )
+    .option('--insecure', 'Skip TLS certificate verification')
+    .action(async (opts: AdminOpts & { username: string }) => {
+      await withSession(opts, async (client) => {
+        const res = await client.call<{ temporary_password: string }>(
+          'admin.user.reset-password',
+          { username: opts.username },
+        )
+        console.log(
+          `Password reset for ${opts.username} (one-time temporary): ${res.temporary_password}`,
+        )
+        console.log('The user must change it at next login.')
+      })
+    })
+
   const token = admin.command('token').description('Manage service tokens')
 
   token
