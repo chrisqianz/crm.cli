@@ -462,12 +462,14 @@ if command -v crm >/dev/null 2>&1; then
   echo "crm.cli already installed: $(command -v crm)"
 elif command -v bun >/dev/null 2>&1; then
   echo "Installing crm.cli via bun…"
-  if ! bun install -g ${source}; then
+  # --trust: bun blocks package lifecycle scripts by default, and git
+  # installs need the postinstall guard to build dist/cli.js.
+  if ! bun install -g ${source} --trust; then
     echo "WARN: bun install failed (offline? private registry?)." >&2
 ${sourceHint}
   fi
 else
-  echo "Neither crm nor bun found — install crm.cli (bun install -g ${source}) first."
+  echo "Neither crm nor bun found — install crm.cli (bun install -g ${source} --trust) first."
 fi
 
 cat > "$CFG" <<TOML

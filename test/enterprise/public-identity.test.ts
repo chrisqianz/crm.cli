@@ -113,7 +113,7 @@ public_host = "crm.corp.example"
       )
       // a real global install, not a one-shot runner; the public
       // package is scoped
-      expect(sh).toContain('bun install -g @dzhng/crm.cli')
+      expect(sh).toContain('bun install -g @dzhng/crm.cli --trust')
       expect(sh).not.toContain('bunx')
       // the script must not declare success while `crm` is missing:
       // a final PATH check with an actionable warning
@@ -168,11 +168,11 @@ install_source = "git+ssh://git@corp.internal/crm/crm-cli.git"
           '/download/install.sh',
         )
         expect(sh).toContain(
-          'bun install -g git+ssh://git@corp.internal/crm/crm-cli.git',
+          'bun install -g git+ssh://git@corp.internal/crm/crm-cli.git --trust',
         )
         // the default package name must not compete with the configured
         // source
-        expect(sh).not.toContain('bun install -g @dzhng/crm.cli')
+        expect(sh).not.toContain('bun install -g @dzhng/crm.cli --trust')
       },
     )
   }, 60_000)
@@ -185,7 +185,7 @@ install_source = "git+ssh://git@corp.internal/crm/crm-cli.git"
       )
       // the public package is scoped — a bare 'crm.cli' name 404s on
       // every registry (live-testing regression)
-      expect(sh).toContain('bun install -g @dzhng/crm.cli')
+      expect(sh).toContain('bun install -g @dzhng/crm.cli --trust')
       // the failure branch must tell the operator how to fix it server-side
       expect(sh).toContain('install_source')
     })
