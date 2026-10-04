@@ -10,7 +10,7 @@
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { activityList, activityLog } from './activity'
-import { auditExport, auditList, auditVerify } from './audit'
+import { auditExport, auditGet, auditList, auditVerify } from './audit'
 import { backupStatus, backupSync } from './backup'
 import {
   companyAdd,
@@ -162,6 +162,7 @@ export const METHODS: Record<string, MethodDef> = {
   'email.send': { minRole: 'writer', write: true, fn: emailSend },
   // ── audit (P4: hash chain; v1 role-level — every role can read) ──
   'audit.list': { minRole: 'reader', write: false, fn: auditList },
+  'audit.get': { minRole: 'reader', write: false, fn: auditGet },
   'audit.verify': { minRole: 'reader', write: false, fn: auditVerify },
   'audit.export': { minRole: 'reader', write: false, fn: auditExport },
   // ── backup (P5): status/sync over RPC; init/restore/check are local-only ──

@@ -150,12 +150,15 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
         <p class="sub">Hash-chained audit log (most recent first).</p>
         <div class="row" style="margin-bottom:12px">
           <div><label>Filter by actor (optional)</label><input id="auActor"></div>
+          <div><label>Filter by action (optional)</label><input id="auAction" placeholder="deal.update"></div>
+          <div><label>Filter by entity (optional)</label><input id="auEntity" placeholder="contact"></div>
           <div style="flex:0"><button class="ghost" id="auRefresh">Refresh</button></div>
           <div style="flex:0"><button class="ghost" id="auVerify">Verify chain</button></div>
         </div>
         <div class="msg" id="auMsg"></div>
         <table><thead><tr><th>Seq</th><th>Time</th><th>Actor</th><th>Action</th><th>Entity</th><th>IP</th></tr></thead>
         <tbody id="auditBody"></tbody></table>
+        <div id="auditDetail" class="hidden" style="margin-top:14px"></div>
       </div>
     </section>
 
@@ -364,17 +367,57 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
   }
 
   // ---- Audit ----
+  // JS mirror of src/lib/diff.ts (the console is a self-contained page).
+  function parseSnap(json) {
+    if (!json) return {};
+    try { var v = JSON.parse(json); return (v && typeof v === "object" && !Array.isArray(v)) ? v : {}; } catch (e) { return {}; }
+  }
+  function snapDisplay(v) { return (v === null || v === undefined) ? "—" : (typeof v === "string" ? v : JSON.stringify(v)); }
+  function diffHtml(bj, aj) {
+    var b = parseSnap(bj), a = parseSnap(aj);
+    var keys = Object.keys(a).concat(Object.keys(b).filter(function (k) { return !a.hasOwnProperty(k); }));
+    var rows = [];
+    keys.forEach(function (k) {
+      var bv = b.hasOwnProperty(k) ? b[k] : null, av = a.hasOwnProperty(k) ? a[k] : null;
+      if (JSON.stringify(bv) === JSON.stringify(av)) return;
+      rows.push("<tr><td class='mono'>" + esc(k) + "</td><td class='mono'>" + esc(snapDisplay(bv)) + "</td><td class='mono'>" + esc(snapDisplay(av)) + "</td></tr>");
+    });
+    if (!rows.length) return "<p class='sub'>no field-level changes (row-level event)</p>";
+    return "<table><thead><tr><th>field</th><th>before</th><th>after</th></tr></thead><tbody>" + rows.join("") + "</tbody></table>";
+  }
+  function showAuditDetail(a) {
+    var h = "<div class='card'><h2>seq " + esc(a.seq) + " — " + esc(a.action) + "</h2>" +
+      "<p class='sub'>" + esc(a.at) + " · actor " + esc(a.actor_name || "—") + " · entity " + esc((a.entity_type || "—") + (a.entity_id ? ":" + a.entity_id : "")) + " · ip " + esc(a.ip || "—") + "</p>" +
+      "<div style='margin:10px 0'><label>before</label><pre class='mono' style='max-height:160px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;font-size:11px'>" + esc(a.before_json || "—") + "</pre></div>" +
+      "<div style='margin:10px 0'><label>after</label><pre class='mono' style='max-height:160px;overflow:auto;background:var(--bg);padding:8px;border-radius:6px;font-size:11px'>" + esc(a.after_json || "—") + "</pre></div>" +
+      "<label>diff</label>" + diffHtml(a.before_json, a.after_json) +
+      "<p class='mono sub'>hash " + esc(a.hash) + "</p></div>";
+    el("auditDetail").innerHTML = h;
+    el("auditDetail").classList.remove("hidden");
+  }
   function loadAudit() {
     var actor = el("auActor").value.trim();
-    call("audit.list", actor ? { actor: actor, limit: 100 } : { limit: 100 }).then(function (d) {
+    var action = el("auAction").value.trim();
+    var entity = el("auEntity").value.trim();
+    var params = { limit: 100 };
+    if (actor) params.actor = actor;
+    if (action) params.action = action;
+    if (entity) params.entity_type = entity;
+    call("audit.list", params).then(function (d) {
       var rows = (d.result && d.result.rows) || [];
       el("auditBody").innerHTML = rows.map(function (a) {
-        return "<tr><td>" + esc(a.seq) + "</td><td>" + fmtDate(a.at) + "</td>" +
+        return "<tr style='cursor:pointer' data-auditseq='" + esc(a.seq) + "'><td>" + esc(a.seq) + "</td><td>" + fmtDate(a.at) + "</td>" +
           "<td class='mono'>" + esc(a.actor_name || "—") + "</td>" +
           "<td class='mono'>" + esc(a.action) + "</td>" +
           "<td class='mono'>" + esc((a.entity_type || "") + (a.entity_id ? ":" + a.entity_id : "")) + "</td>" +
           "<td class='mono'>" + esc(a.ip || "—") + "</td></tr>";
       }).join("");
+      el("auditBody").querySelectorAll("tr[data-auditseq]").forEach(function (tr) {
+        tr.onclick = function () {
+          var row = rows.filter(function (r) { return String(r.seq) === tr.dataset.auditseq; })[0];
+          if (row) showAuditDetail(row);
+        };
+      });
     }).catch(function (e) { showMsg("auMsg", "err", e.message); });
   }
 

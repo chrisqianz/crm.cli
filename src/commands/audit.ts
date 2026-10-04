@@ -1,6 +1,7 @@
 import type { Command } from 'commander'
 
 import { formatOutput } from '../format'
+import { renderDiff } from '../lib/diff'
 import { die } from '../lib/helpers'
 import { dispatch, renderCtx } from '../remote/dispatch'
 
@@ -73,6 +74,67 @@ export function registerAuditCommands(program: Command) {
       console.log(
         `OK: audit chain intact — ${r.chained} row(s) verified${genesis}${legacyNote}`,
       )
+    })
+
+  audit
+    .command('show <seq>')
+    .description(
+      'Show one audit row by chain seq (--diff: field-level before/after)',
+    )
+    .option('--diff', 'Render the before/after field diff')
+    .action(async (seq: string, opts: { diff?: boolean }) => {
+      const { row } = await dispatch<{ row: Record<string, unknown> }>(
+        'audit.get',
+        { seq: Number(seq) },
+      )
+      if (process.env.CRM_FORMAT === 'json' || opts.diff) {
+        console.log(
+          JSON.stringify(
+            {
+              seq: row.seq,
+              at: row.at,
+              actor: row.actor_name,
+              action: row.action,
+              entity_type: row.entity_type,
+              entity_id: row.entity_id,
+              before: row.before_json,
+              after: row.after_json,
+            },
+            null,
+            2,
+          ),
+        )
+        if (opts.diff) {
+          console.log(
+            renderDiff(
+              String(row.before_json ?? ''),
+              String(row.after_json ?? ''),
+            ),
+          )
+        }
+        return
+      }
+      console.log(`seq      ${row.seq}`)
+      console.log(`at       ${row.at}`)
+      console.log(`actor    ${row.actor_name} (id ${row.actor_id})`)
+      console.log(`action   ${row.action}`)
+      console.log(
+        `entity   ${row.entity_type ?? '—'} ${row.entity_id ?? ''}`.trim(),
+      )
+      console.log(`ip       ${row.ip ?? '—'}  source ${row.source}`)
+      console.log(`hash     ${row.hash}`)
+      if (opts.diff) {
+        console.log()
+        console.log(
+          renderDiff(
+            String(row.before_json ?? ''),
+            String(row.after_json ?? ''),
+          ),
+        )
+      } else if (row.before_json || row.after_json) {
+        console.log(`before   ${row.before_json ?? '—'}`)
+        console.log(`after    ${row.after_json ?? '—'}`)
+      }
     })
 
   audit

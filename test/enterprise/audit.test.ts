@@ -7,6 +7,7 @@ import { join } from 'node:path'
 
 import { createClient } from '@libsql/client'
 
+import { diffSnapshots, renderDiff } from '../../src/lib/diff'
 import {
   ensurePrivateDir,
   socketPathFor,
@@ -645,4 +646,113 @@ describe('P4 audit: remote command access', () => {
       ).toBe(true)
     })
   }, 90_000)
+})
+
+// B4: the diff view. lib/diff is the shared renderer (CLI + tests);
+// audit.get is the registry endpoint; the console renders its own JS
+// mirror, so the console tests cover wiring + the server-side filters
+describe('B4: audit diff view', () => {
+  test('diffSnapshots: changed fields only, one-side-only fields included', () => {
+    const before = JSON.stringify({ stage: 'open', value: 100, title: 'T' })
+    const after = JSON.stringify({
+      stage: 'won',
+      value: 100,
+      title: 'T',
+      note: 'x',
+    })
+    const diffs = diffSnapshots(before, after)
+    expect(diffs.map((d) => d.field).sort()).toEqual(['note', 'stage'])
+    const stage = diffs.find((d) => d.field === 'stage')
+    expect(stage?.before).toBe('open')
+    expect(stage?.after).toBe('won')
+  })
+
+  test('diffSnapshots: row-level events (both snapshots absent) are not changes', () => {
+    expect(diffSnapshots(null, null)).toEqual([])
+    expect(diffSnapshots('', '')).toEqual([])
+    expect(renderDiff(null, null)).toContain('row-level event')
+    // a creation (before absent, after present) shows every added field
+    const created = diffSnapshots(null, JSON.stringify({ a: 1 }))
+    expect(created.map((d) => d.field)).toEqual(['a'])
+    expect(created[0].before).toBe('—')
+  })
+
+  test('renderDiff prints a side-by-side table', () => {
+    const out = renderDiff(
+      JSON.stringify({ stage: 'open' }),
+      JSON.stringify({ stage: 'won' }),
+    )
+    expect(out).toContain('stage')
+    expect(out).toContain('open')
+    expect(out).toContain('won')
+    expect(out).not.toContain('unchanged')
+  })
+
+  test('audit.get returns the row; bad seq is NOT_FOUND', async () => {
+    const { dbPath, cleanup } = freshDb()
+    const server: TestServer = await startServer(dbPath)
+    try {
+      const owner = await bootstrapOwner(server)
+      const admin = await connect(server.port, owner.token)
+      const created = await admin.call<{ id: string }>('contact.add', {
+        name: 'Diff Corp',
+      })
+      await admin.call('contact.edit', {
+        ref: created.id,
+        name: 'Diff Corp Renamed',
+      })
+      const list = await admin.call<{ rows: { seq: number }[] }>('audit.list', {
+        limit: 5,
+      })
+      const updateRow = list.rows.find((r) => r.seq > 0)
+      expect(updateRow).toBeDefined()
+      const got = await admin.call<{ row: { seq: number; action: string } }>(
+        'audit.get',
+        { seq: updateRow!.seq },
+      )
+      expect(got.row.seq).toBe(updateRow!.seq)
+      expect(typeof got.row.action).toBe('string')
+      await expect(admin.call('audit.get', { seq: 999_999 })).rejects.toThrow(
+        /not found/,
+      )
+    } finally {
+      await server.close()
+      cleanup()
+    }
+  }, 60_000)
+
+  test('CLI: crm audit show <seq> --diff prints the field table', async () => {
+    const { dbPath, cleanup } = freshDb()
+    const server: TestServer = await startServer(dbPath)
+    try {
+      const owner = await bootstrapOwner(server)
+      const admin = await connect(server.port, owner.token)
+      const created = await admin.call<{ id: string }>('contact.add', {
+        name: 'Show Corp',
+      })
+      await admin.call('contact.edit', {
+        ref: created.id,
+        name: 'Show Corp V2',
+      })
+      const list = await admin.call<{
+        rows: { seq: number; action: string }[]
+      }>('audit.list', { action: 'contact.edit', limit: 5 })
+      const row = list.rows.find((r) => r.action === 'contact.edit')
+      expect(row).toBeDefined()
+      const out = remoteRun(server, owner.token, [
+        'audit',
+        'show',
+        String(row!.seq),
+        '--diff',
+      ])
+      expect(out.exitCode, out.stderr).toBe(0)
+      expect(out.stdout).toContain('before')
+      expect(out.stdout).toContain('after')
+      expect(out.stdout).toContain('Show Corp V2')
+      expect(out.stdout).not.toContain('Show Corp\n')
+    } finally {
+      await server.close()
+      cleanup()
+    }
+  }, 60_000)
 })
