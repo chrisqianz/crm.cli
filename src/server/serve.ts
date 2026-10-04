@@ -93,10 +93,12 @@ export function startServer(opts: ServeOptions): Promise<tls.Server> {
     key: opts.keyOverride,
   })
 
-  let connections = 0
+  // B5: live server facts for `server.status` (reader-accessible).
+  // startedAt powers uptime; connections is the current open-socket count.
+  const live = { connections: 0, startedAt: Date.now() }
   const server = tls.createServer({ key, cert }, (socket) => {
-    connections++
-    if (connections > MAX_CONNECTIONS) {
+    live.connections++
+    if (live.connections > MAX_CONNECTIONS) {
       socket.write(
         `${JSON.stringify({
           error: {
@@ -106,7 +108,7 @@ export function startServer(opts: ServeOptions): Promise<tls.Server> {
         })}\n`,
       )
       socket.destroy()
-      connections--
+      live.connections--
       return
     }
 
@@ -178,7 +180,7 @@ export function startServer(opts: ServeOptions): Promise<tls.Server> {
           const result = await handleCommand(
             db,
             config,
-            { ip: ctx.ip },
+            { ip: ctx.ip, live },
             identity.current,
             msg.method,
             msg.params ?? {},
@@ -251,7 +253,7 @@ export function startServer(opts: ServeOptions): Promise<tls.Server> {
 
     socket.setTimeout(IDLE_TIMEOUT_MS, () => socket.destroy())
     socket.on('close', () => {
-      connections--
+      live.connections--
       if (identity.current) {
         recordAudit(db, {
           actor_id: identity.current.id,

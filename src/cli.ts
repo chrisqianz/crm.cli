@@ -25,6 +25,7 @@ import { registerPasswordCommands } from './commands/password'
 import { registerReportCommands } from './commands/report'
 import { registerSearchCommands } from './commands/search'
 import { registerServeCommand } from './commands/serve'
+import { registerStatusCommands } from './commands/status'
 import { registerSuggestCommand } from './commands/suggest'
 import { registerTagCommands } from './commands/tag'
 import { registerTaskCommands } from './commands/task'
@@ -60,6 +61,7 @@ export function buildProgram(): Command {
 
   registerContactCommands(program)
   registerAuditCommands(program)
+  registerStatusCommands(program)
   registerCompanyCommands(program)
   registerDealCommands(program)
   registerPipelineCommand(program)

@@ -1,3 +1,6 @@
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
@@ -14,6 +17,11 @@ import {
   openDirectory,
   roleForGroups,
 } from '../lib/ldap'
+import {
+  configPathFor,
+  resolveLitestream,
+  runLitestream,
+} from '../lib/litestream'
 import {
   generatePassword,
   generateToken,
@@ -655,10 +663,16 @@ async function issueToken(
 
 // ── Command dispatch (post-auth frames) ──
 
+/** Live facts only the socket layer knows (B5 `server.status`). */
+export interface LiveStats {
+  connections: number
+  startedAt: number
+}
+
 export async function handleCommand(
   db: DB,
   config: CRMConfig,
-  ctx: { ip: string },
+  ctx: { ip: string; live?: LiveStats },
   identity: Identity,
   method: string,
   params: Record<string, unknown>,
@@ -671,6 +685,18 @@ export async function handleCommand(
       )
     }
     return handleAdmin(db, ctx, identity, method, params)
+  }
+  if (method === 'server.status') {
+    // Server-only by construction (the live counter only exists on the
+    // socket layer); minRole reader — it is liveness/overview, and it
+    // carries no config, no secrets, no host paths.
+    if (!roleAllows('reader', identity.role)) {
+      throw new ServerError(
+        'FORBIDDEN',
+        `role "${identity.role}" cannot call server.status`,
+      )
+    }
+    return serverStatus(db, config, ctx.live)
   }
   if (method === 'auth.change-password') {
     // Server-only by construction: local mode has no session identity, so
@@ -1168,4 +1194,126 @@ async function adminTokenRevoke(
     after_json: JSON.stringify({ name: t.name, username: t.user_id }),
   })
   return { ok: true, id }
+}
+
+// ── B5: server.status (liveness/overview) ──
+
+function serverVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+    ) as { version?: string }
+    return pkg.version ?? 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * Best-effort litestream probe for the dashboard. Any problem — no backup
+ * configured, no binary, probe failure — degrades to nulls rather than
+ * failing the whole status call; the dashboard shows a dash.
+ */
+async function probeBackup(
+  config: CRMConfig,
+): Promise<{ last_sync_at: string | null; in_sync: boolean | null }> {
+  const none = { last_sync_at: null, in_sync: null }
+  try {
+    const dbPath = config.database.path
+    if (!dbPath) {
+      return none
+    }
+    const litestreamConfig = configPathFor(dbPath)
+    if (!existsSync(litestreamConfig)) {
+      return none
+    }
+    const bin = resolveLitestream()
+    const res = await runLitestream(
+      bin,
+      ['status', '--config', litestreamConfig, '--json'],
+      5000,
+    )
+    if (res.exitCode !== 0) {
+      return none
+    }
+    const rows: { status?: string }[] = JSON.parse(res.stdout)
+    const in_sync = rows.length > 0 && rows.every((r) => r.status === 'synced')
+    let last_sync_at: string | null = null
+    // Local destinations keep the frame files on disk; the newest one's
+    // mtime is the last sync. Remote (s3://) destinations don't.
+    const dest = config.backup.destination
+    if (dest && !dest.startsWith('s3://')) {
+      last_sync_at = newestLtxMtime(dest)
+    }
+    return { last_sync_at, in_sync }
+  } catch {
+    return none
+  }
+}
+
+function newestLtxMtime(replicaDir: string): string | null {
+  let newest = 0
+  const walk = (dir: string): void => {
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of entries) {
+      const p = join(dir, name)
+      try {
+        const st = statSync(p)
+        if (st.isDirectory()) {
+          walk(p)
+        } else if (name.endsWith('.ltx') && st.mtimeMs > newest) {
+          newest = st.mtimeMs
+        }
+      } catch {
+        // vanished mid-walk; skip
+      }
+    }
+  }
+  walk(replicaDir)
+  return newest > 0 ? new Date(newest).toISOString() : null
+}
+
+export async function serverStatus(
+  db: DB,
+  config: CRMConfig,
+  live: LiveStats | undefined,
+): Promise<Record<string, unknown>> {
+  const [userCount, tokenCount] = await Promise.all([
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(schema.users)
+      .then((r) => Number(r[0]?.n ?? 0)),
+    db
+      .select({ n: sql<number>`count(*)` })
+      .from(schema.tokens)
+      .then((r) => Number(r[0]?.n ?? 0)),
+  ])
+  const auditSeq =
+    (await (
+      await db.select({ s: sql<number>`max(seq)` }).from(schema.auditLog)
+    )[0]?.s) ?? null
+  let dbBytes = 0
+  if (config.database.path && existsSync(config.database.path)) {
+    try {
+      dbBytes = statSync(config.database.path).size
+    } catch {
+      dbBytes = 0
+    }
+  }
+  return {
+    server_version: serverVersion(),
+    now: new Date().toISOString(),
+    uptime_ms: live ? Date.now() - live.startedAt : null,
+    connections: live ? live.connections : null,
+    users: userCount,
+    tokens: tokenCount,
+    db_bytes: dbBytes,
+    audit_seq: auditSeq === null ? null : Number(auditSeq),
+    backup: await probeBackup(config),
+  }
 }

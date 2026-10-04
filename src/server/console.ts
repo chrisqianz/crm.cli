@@ -95,12 +95,27 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
   <!-- MAIN -->
   <section id="mainView" class="hidden">
     <nav class="tabs" id="tabs">
-      <button data-tab="users" class="active">Users</button>
+      <button data-tab="dash" class="active">Dashboard</button>
+      <button data-tab="users">Users</button>
       <button data-tab="tokens">Tokens</button>
       <button data-tab="audit">Audit</button>
       <button data-tab="config">Config</button>
       <button data-tab="clients">Clients</button>
     </nav>
+
+    <section id="tab-dash">
+      <div class="card">
+        <div class="row" style="justify-content:space-between;margin-bottom:12px">
+          <div><h2 style="margin:0">Dashboard</h2>
+          <p class="sub">Live server facts, auto-refreshed every 30 s.</p></div>
+          <button class="ghost" id="dashRefresh">Refresh</button>
+        </div>
+        <div class="msg" id="dashMsg"></div>
+        <div id="dashCards" class="grid" style="gap:10px">
+          <div class="card"><p class="sub">loading…</p></div>
+        </div>
+      </div>
+    </section>
 
     <section id="tab-users">
       <div class="card">
@@ -260,6 +275,31 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     return api("/api/call", { method: "POST", body: JSON.stringify({ method: method, params: params || {} }) });
   }
 
+  // ---- Dashboard (B5) ----
+  function dashCard(label, value) {
+    return "<div class='card'><p class='sub'>" + esc(label) + "</p><div class='mono' style='font-size:16px;font-weight:600'>" + esc(value) + "</div></div>";
+  }
+  function loadDashboard() {
+    call("server.status", {}).then(function (d) {
+      var s = d.result || {};
+      var sync = s.backup && s.backup.in_sync === null ? "not configured"
+        : (s.backup && s.backup.in_sync ? "in sync" : "behind");
+      var last = s.backup && s.backup.last_sync_at ? " (last " + s.backup.last_sync_at + ")" : "";
+      var cards = [];
+      cards.push(dashCard("version", s.server_version || "—"));
+      cards.push(dashCard("uptime", s.uptime_ms != null ? Math.round(s.uptime_ms / 1000) + " s" : "—"));
+      cards.push(dashCard("connections", s.connections != null ? s.connections : "—"));
+      cards.push(dashCard("users", s.users != null ? s.users : "—"));
+      cards.push(dashCard("tokens", s.tokens != null ? s.tokens : "—"));
+      cards.push(dashCard("db size", s.db_bytes != null ? Math.round(s.db_bytes / 1048576 * 100) / 100 + " MB" : "—"));
+      cards.push(dashCard("audit seq", s.audit_seq != null ? s.audit_seq : "—"));
+      cards.push(dashCard("backup", sync + last));
+      el("dashCards").innerHTML = cards.join("");
+    }).catch(function (e) { showMsg("dashMsg", "err", e.message); });
+  }
+  el("dashRefresh").onclick = loadDashboard;
+  setInterval(loadDashboard, 30000);
+
   function setAuthed() {
     el("loginView").classList.add("hidden");
     el("mainView").classList.remove("hidden");
@@ -267,6 +307,7 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     el("logout").classList.remove("hidden");
     el("whoami").textContent = (who ? who.username + " · " + who.role : "");
     el("whoami").style.color = who && who.role === "owner" ? "var(--warn)" : "var(--acc)";
+    loadDashboard();
     if (who && (who.role === "owner" || who.role === "admin")) {
       loadUsers(); loadTokens(); loadAudit(); loadConfig();
     } else {
@@ -463,7 +504,7 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     document.querySelectorAll("nav.tabs button").forEach(function (b) {
       b.classList.toggle("active", b.dataset.tab === name);
     });
-    ["users", "tokens", "audit", "config", "clients"].forEach(function (t) {
+    ["dash", "users", "tokens", "audit", "config", "clients"].forEach(function (t) {
       el("tab-" + t).classList.toggle("hidden", t !== name);
     });
   }
