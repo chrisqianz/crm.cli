@@ -96,6 +96,16 @@ they see.
   the install source is computed once in `installScript` and the
   config view/TOML mirror it — same single-source pattern as the
   advertised address.
+- Client-installability fixes (live-testing, all covered by
+  `test/enterprise/public-identity.test.ts`): the public package is
+  scoped (`@dzhng/crm.cli`) — the bare name 404s; git installs need
+  the postinstall build guard plus a committed `bin/crm.js` shim
+  (bun links bins before postinstall, so the target must exist in the
+  repo); `prepare` tolerates missing husky; the generated command
+  passes `--trust` because bun blocks lifecycle scripts by default.
+  Operational caveat: bun caches git clones by URL and can serve a
+  stale revision — production `install_source` should pin a tag or
+  SHA, not a floating branch.
 - Side fix from live testing: `test/enterprise/config-trust.test.ts`
   learned HOME isolation — a saved host session flipped its local-mode
   `contact list` to remote mode (commit `a334194`).
