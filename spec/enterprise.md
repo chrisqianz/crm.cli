@@ -496,6 +496,42 @@ of a hard-coded list, so a team can capture its real cadence (wechat, visit,
 entertainment, dingtalk, …) — or replace the defaults — without patching the
 binary. The same list drives the CLI help text.
 
+## Admin surface (B, as-built)
+
+Completes the ops story the P-phase console only half-covered. Full spec:
+[spec/admin-surface.md](admin-surface.md). All console paths go through the
+same `/api/call` JSON endpoint as the RPC wire — no parallel auth or audit
+surface.
+
+- **Password lifecycle (B1):** `admin.user.reset-password` reuses the
+  one-time-initial-password flow (same must_change_password flag, same
+  shown-once display); `auth.change-password` (server-only method, current
+  password required) powers `crm password change`. Login enforces
+  must-change (no data methods until changed) and optional `password_max_age_days`
+  expiry (0 = off; legacy NULL rows are treated as "never expired" so
+  existing deployments are not blindsided). Failed change attempts do not
+  move the lockout counter. LDAP-provisioned users are refused local
+  self-service changes — the directory is the password authority.
+- **User deletion (B2):** `admin.user.delete` (admin/owner) refuses
+  self-delete, NULLs `owner` in contacts/deals/tasks (rows survive,
+  unowned), and deletes the row — tokens die via the existing FK cascade.
+  One audit row with a before snapshot.
+- **Console users tab (B3):** role select, per-row reset (one-time password
+  modal), per-row delete (confirm) — the viewer's own row has no delete.
+- **Audit diff (B4):** `audit.get` (reader) + `crm audit show <seq> --diff`
+  render before/after snapshots as changed-fields only; `audit.list` gains
+  an entity filter; the console Audit tab filters by actor/action/entity and
+  diffs inline. Display-only — the chain and `audit verify` are untouched.
+- **Server status (B5):** `server.status` (reader) reports version, uptime,
+  live connections (socket accept/close counters), user/token counts, db
+  file size, audit seq, and litestream backup state (best-effort; nulls
+  when unconfigured). `crm status` prints it; the console Dashboard tab
+  shows it with 30s auto-refresh.
+- **recordAudit serialization:** audit writes on a shared in-process libsql
+  client run through a per-client promise chain — the SQLite write lock is
+  per process, so concurrent recordAudit calls on one client used to
+  interleave their write transactions and fail with SQLITE_BUSY.
+
 ## Out of scope for v1
 
 - Multi-tenancy (per-tenant rows in one DB)

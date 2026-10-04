@@ -275,8 +275,12 @@ That creates the `owner` account. Bootstrap is refused once any user exists.
 | `crm logout` | Forget the saved session (token stays valid server-side) |
 | `crm admin user create --username u --role writer` | Provision a user; prints a **one-time** initial password |
 | `crm admin user list \| set-role \| disable \| enable` | Manage accounts |
+| `crm admin user reset-password --username u` | Force a password reset; prints a **one-time** password (same flow as create) |
+| `crm admin user delete --username u` | Delete the account (admin/owner); their owned rows become unowned, never deleted |
+| `crm password change` | Change your own password (current password required; server-only) |
 | `crm admin token create --name bot` | Service token for agents/services (shown once) |
 | `crm admin token list \| revoke` | Manage service tokens |
+| `crm status` | Server health: version, uptime, live connections, user/token counts, db size, audit seq, litestream backup state (auto-refreshes in the console dashboard) |
 
 Roles: `owner`, `admin`, `writer`, `reader`. Non-admins calling `admin.*`
 methods get `FORBIDDEN`; non-allowed data methods get
@@ -366,7 +370,8 @@ records over the wire; validation and writes happen server-side.
   local single-user mode). See [Exit Codes](#exit-codes).
 - **Audit**: every mutation — CLI (local or remote), RPC, admin, or FUSE —
   writes exactly one row to a hash-chained `audit_log`; `crm audit
-  verify` detects tampering. See [Audit](#audit).
+  verify` detects tampering. `crm audit show <seq> --diff` prints one
+  row's before/after snapshots as a changed-fields diff. See [Audit](#audit).
 - FUSE mounts and NFS export stay local-only (the server exposes RPC,
 not filesystems).
 - `crm admin token create` is how you issue an agent's service token;

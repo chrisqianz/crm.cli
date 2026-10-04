@@ -531,6 +531,15 @@ Entity data is passed as JSON on stdin. Pre-hooks abort on non-zero exit.
 
 Available hooks: `{pre,post}-{contact,company,deal}-{add,edit,rm}`, `{pre,post}-deal-stage-change`, `{pre,post}-activity-add`.
 
+## Server & Admin
+
+Server-side operations (all RPC-only: they need `crm login` or the `CRM_SERVER` + `CRM_TOKEN` env pattern — `--db` never helps):
+
+- **`crm status`** — server health: version, uptime, live connections, user/token counts, db size, audit seq, and litestream backup state (last sync + in-sync flag). Read-only for every role; the web console's Dashboard tab shows the same via 30s auto-refresh.
+- **`crm password change`** — change your own password (current required). Admins reset others' with `crm admin user reset-password --username u` (one-time password, shown once). Forced on first login after either.
+- **`crm admin user delete --username u`** — delete an account (admin/owner). Owned rows (contacts/deals/tasks) become **unowned**, never deleted; the account's tokens die with the row (FK cascade). You cannot delete yourself.
+- **`crm audit show <seq> --diff`** — one audit row with its before/after snapshots rendered as a changed-fields diff. `crm audit list --entity-type X` filters by entity; the console Audit tab filters by actor/action/entity and diffs inline.
+
 ## Tips for AI Agents
 
 - **Mount first:** `crm mount ~/crm` gives you filesystem access — read JSON files directly instead of running CLI commands. It reads the database locally, so it needs the path named and does not work against a remote server
