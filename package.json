@@ -24,7 +24,8 @@
     "test": "bun test --timeout 30000",
     "lint": "ultracite fix",
     "prepublishOnly": "bun run build",
-    "prepare": "husky"
+    "postinstall": "test -f dist/cli.js || bun run build",
+    "prepare": "husky || true"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx,json,jsonc,css,scss,md,mdx}": [

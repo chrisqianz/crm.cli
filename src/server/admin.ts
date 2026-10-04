@@ -440,10 +440,11 @@ insecure = ${ctx.rpcInsecure}
  * write the preconfigured config, and prompt for the first login.
  */
 function installScript(ctx: Ctx): string {
-  // D-A2: the server decides what gets installed. crm.cli is not (yet)
-  // on public npm, so an enterprise deployment configures its own
-  // mirror/git source; the fallback is the public package by name.
-  const source = ctx.installSource === '' ? 'crm.cli' : ctx.installSource
+  // D-A2: the server decides what gets installed. crm.cli is published
+  // under the scoped name @dzhng/crm.cli — an enterprise deployment
+  // configures its own mirror/git source; the fallback is the public
+  // package by its real (scoped) name.
+  const source = ctx.installSource === '' ? '@dzhng/crm.cli' : ctx.installSource
   const sourceHint =
     ctx.installSource === ''
       ? '      The package may not be published on your registry. Set [serve]\n      install_source = "<internal-mirror-or-git-url>" on the server and re-download.'
