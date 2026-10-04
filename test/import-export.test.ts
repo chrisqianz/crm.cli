@@ -326,6 +326,10 @@ describe('import edge cases', () => {
       { name: 'Stdin Jane', email: 'stdin@acme.com' },
     ])
 
+    // A saved ~/.crm/credentials on the host (any developer logged into
+    // a server) would flip this process into remote mode even with
+    // --db — the import would land in the remote database, not the
+    // local test file. Isolate HOME so the test proves local mode.
     const proc = Bun.spawnSync(
       [
         'bun',
@@ -339,7 +343,11 @@ describe('import edge cases', () => {
       ],
       {
         cwd: ctx.dir,
-        env: { ...process.env, NO_COLOR: '1' },
+        env: {
+          ...process.env,
+          NO_COLOR: '1',
+          HOME: join(ctx.dir, 'home'),
+        },
         stdin: Buffer.from(json),
       },
     )

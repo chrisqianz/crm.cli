@@ -297,7 +297,13 @@ describe('P4 audit: local mode rows', () => {
           '--email',
           'local@p4.test',
         ],
-        { env: { ...process.env, NO_COLOR: '1' } },
+        {
+          cwd: process.cwd(),
+          // A saved host session in ~/.crm would flip this process into
+          // remote mode; HOME isolation makes the local-mode contract
+          // hold no matter who ran it last.
+          env: { ...process.env, NO_COLOR: '1', HOME: '/tmp/crm-audit-home' },
+        },
       )
       expect(proc.exitCode, proc.stderr.toString()).toBe(0)
       const rows = await auditRows(dbPath)
