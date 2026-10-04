@@ -640,6 +640,11 @@ export async function handleCommand(
     }
     return handleAdmin(db, ctx, identity, method, params)
   }
+  if (method === 'auth.change-password') {
+    // Server-only by construction: local mode has no session identity, so
+    // the registry (which local dispatch shares) is never consulted for it.
+    return changePassword(db, config, ctx, identity, params)
+  }
   const def = METHODS[method]
   if (!def) {
     throw new ServerError('INVALID', `unknown method "${method}"`)
@@ -937,6 +942,74 @@ async function adminUserResetPassword(
     after_json: JSON.stringify({ username, must_change_password: true }),
   })
   return { username, temporary_password: temporaryPassword }
+}
+
+async function changePassword(
+  db: DB,
+  config: CRMConfig,
+  ctx: { ip: string },
+  identity: Identity,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const current = strParam(params, 'current')
+  const newPass = strParam(params, 'new')
+  const u = await findUserById(db, identity.id)
+  if (!u) {
+    throw new ServerError('AUTH', 'session user no longer exists')
+  }
+  if (u.auth_source === 'ldap') {
+    throw new ServerError(
+      'AUTH',
+      'directory is the password authority for this account',
+    )
+  }
+  if (!(u.password_hash && (await verifyPassword(u.password_hash, current)))) {
+    // A wrong CURRENT is not a login attempt — the caller already holds a
+    // session — so the lockout counters stay put. The attempt itself is
+    // still remembered.
+    await recordAudit(db, {
+      actor_id: identity.id,
+      actor_name: identity.username,
+      action: 'auth.change-password-failed',
+      source: 'rpc',
+      ip: ctx.ip,
+      entity_type: 'user',
+      entity_id: u.id,
+      after_json: JSON.stringify({ reason: 'current password incorrect' }),
+    })
+    throw new ServerError('AUTH', 'current password incorrect')
+  }
+  if (newPass.length < config.auth.password_min_length) {
+    throw new ServerError(
+      'INVALID',
+      `password must be at least ${config.auth.password_min_length} characters`,
+    )
+  }
+  if (newPass === current) {
+    throw new ServerError(
+      'INVALID',
+      'new password must differ from the current one',
+    )
+  }
+  await db
+    .update(schema.users)
+    .set({
+      password_hash: await hashPassword(newPass),
+      must_change_password: 0,
+      password_changed_at: new Date().toISOString(),
+    })
+    .where(eq(schema.users.id, u.id))
+  await recordAudit(db, {
+    actor_id: identity.id,
+    actor_name: identity.username,
+    action: 'auth.change-password',
+    source: 'rpc',
+    ip: ctx.ip,
+    entity_type: 'user',
+    entity_id: u.id,
+    after_json: JSON.stringify({ username: u.username }),
+  })
+  return { username: u.username }
 }
 
 async function adminTokenCreate(
