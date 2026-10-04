@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { createClient } from '@libsql/client'
+
 import { RpcClient } from '../../src/lib/rpc.ts'
 
 export const REPO = join(import.meta.dir, '..', '..')
@@ -202,6 +204,21 @@ export async function connect(
   if (token) {
     await client.call('auth.token', { token })
   }
+  return client
+}
+
+/**
+ * A direct libsql client on a test database, with a busy timeout so
+ * writes don't fail immediately when the server process (a separate
+ * writer — service writes plus the fire-and-forget conn.closed audit)
+ * holds the write lock. The libsql TS Config has no busyTimeout option,
+ * so the pragma is the way in; the server-side db.open sets its own.
+ */
+export async function externalClient(
+  dbPath: string,
+): Promise<ReturnType<typeof createClient>> {
+  const client = createClient({ url: `file:${dbPath}` })
+  await client.execute('PRAGMA busy_timeout=15000')
   return client
 }
 

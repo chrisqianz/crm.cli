@@ -3,10 +3,9 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createClient } from '@libsql/client'
-
 import {
   bootstrapOwner,
+  externalClient,
   freshDb,
   REPO,
   startServer,
@@ -161,7 +160,7 @@ describe('P3 CAS: concurrent remote writers', () => {
       expect(loser?.stderr).toContain('version: 2')
 
       // Exactly one name won
-      const client = createClient({ url: `file:${server.dbPath}` })
+      const client = await externalClient(server.dbPath)
       const rows = await client.execute(
         'SELECT name FROM contacts WHERE id = ?',
         [id],

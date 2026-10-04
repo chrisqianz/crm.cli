@@ -5,8 +5,6 @@ import { connect as netConnect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createClient } from '@libsql/client'
-
 import { diffSnapshots, renderDiff } from '../../src/lib/diff'
 import {
   ensurePrivateDir,
@@ -17,6 +15,7 @@ import {
   bootstrapOwner,
   CRM,
   connect,
+  externalClient,
   freshDb,
   REPO,
   startServer,
@@ -51,7 +50,7 @@ interface AuditRow {
 }
 
 async function auditRows(dbPath: string, where = ''): Promise<AuditRow[]> {
-  const client = createClient({ url: `file:${dbPath}` })
+  const client = await externalClient(dbPath)
   try {
     const r = await client.execute(
       `SELECT * FROM audit_log ${where} ORDER BY seq`,
@@ -211,7 +210,7 @@ describe('P4 audit: hash chain', () => {
       remoteRun(server, token, ['contact', 'edit', 't@p4.test', '--name', 'T2'])
       const rows = await auditRows(server.dbPath)
       const victim = rows.find((r) => r.action === 'contact.add')!
-      const client = createClient({ url: `file:${server.dbPath}` })
+      const client = await externalClient(server.dbPath)
       await client.execute(
         `UPDATE audit_log SET actor_name = 'mallory' WHERE seq = ?`,
         [victim.seq],
@@ -243,7 +242,7 @@ describe('P4 audit: hash chain', () => {
       ])
       const rows = await auditRows(server.dbPath)
       const victim = rows.find((r) => r.action === 'contact.add')!
-      const client = createClient({ url: `file:${server.dbPath}` })
+      const client = await externalClient(server.dbPath)
       await client.execute('DELETE FROM audit_log WHERE seq = ?', [victim.seq])
       client.close()
       const out = remoteRun(server, token, ['audit', 'verify'])
@@ -257,7 +256,7 @@ describe('P4 audit: hash chain', () => {
   test('legacy (pre-P4) rows are reported, chain still verifies', async () => {
     await withServer(async (server, token) => {
       // simulate a pre-P4 row: empty hashes
-      const client = createClient({ url: `file:${server.dbPath}` })
+      const client = await externalClient(server.dbPath)
       await client.execute(
         `INSERT INTO audit_log (at, actor_id, actor_name, action, source)
          VALUES ('2026-01-01T00:00:00.000Z', 'legacy', 'legacy-user', 'contact.add', 'rpc')`,
@@ -343,7 +342,7 @@ describe('P4 audit: local mode rows', () => {
       const ok = run('audit', 'verify')
       expect(ok.exitCode, ok.stdout + ok.stderr).toBe(0)
 
-      const client = createClient({ url: `file:${dbPath}` })
+      const client = await externalClient(dbPath)
       const r = await client.execute(
         `SELECT seq FROM audit_log WHERE action = 'contact.add' LIMIT 1`,
       )
@@ -451,7 +450,7 @@ describe('P4 audit: FUSE daemon writes', () => {
       }
 
       // seed a contact, write its document through the daemon
-      const client = createClient({ url: `file:${dbPath}` })
+      const client = await externalClient(dbPath)
       await client.execute(
         `INSERT INTO contacts (id, name, emails, phones, companies, tags, custom_fields, created_at, updated_at)
          VALUES ('ct_p4daemonkey00000000000000000', 'Fuse', '[]', '[]', '[]', '[]', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,

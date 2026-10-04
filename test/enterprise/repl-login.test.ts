@@ -10,7 +10,13 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { bootstrapOwner, connect, freshDb, startServer } from './helpers'
+import {
+  bootstrapOwner,
+  connect,
+  externalClient,
+  freshDb,
+  startServer,
+} from './helpers'
 
 interface ReplRun {
   code: number
@@ -93,8 +99,7 @@ test('login wizard rides the real login command and the session works', async ()
     // the server recorded the write as an audit row owned by `owner`
     // (libSQL client, same as audit.test.ts — the serve DB is libSQL,
     // not something bun:sqlite can see)
-    const { createClient } = await import('@libsql/client')
-    const lq = createClient({ url: `file:${dbPath}` })
+    const lq = await externalClient(dbPath)
     const res = await lq.execute(
       `SELECT action, actor_name, entity_type FROM audit_log
              WHERE action = 'contact.add'`,

@@ -3,12 +3,11 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createClient } from '@libsql/client'
-
 import { RpcError } from '../../src/lib/rpc'
 import {
   bootstrapOwner,
   connect,
+  externalClient,
   freshDb,
   startServer,
   type TestServer,
@@ -16,7 +15,7 @@ import {
 
 const NEW_PASS = 'New-pass-123!'
 
-function usersRow(
+async function usersRow(
   dbPath: string,
   username: string,
 ): Promise<{
@@ -25,7 +24,7 @@ function usersRow(
   failed_attempts: number
   locked_until: string | null
 } | null> {
-  const client = createClient({ url: `file:${dbPath}` })
+  const client = await externalClient(dbPath)
   return client
     .execute({
       sql: 'SELECT must_change_password, password_changed_at, failed_attempts, locked_until FROM users WHERE username = ?',
@@ -49,14 +48,15 @@ function usersRow(
 }
 
 function auditCount(dbPath: string, action: string): Promise<number> {
-  const client = createClient({ url: `file:${dbPath}` })
-  return client
-    .execute({
-      sql: 'SELECT COUNT(*) AS n FROM audit_log WHERE action = ?',
-      args: [action],
-    })
-    .then((r) => Number(r.rows[0].n))
-    .finally(() => client.close())
+  return externalClient(dbPath).then((client) =>
+    client
+      .execute({
+        sql: 'SELECT COUNT(*) AS n FROM audit_log WHERE action = ?',
+        args: [action],
+      })
+      .then((r) => Number(r.rows[0].n))
+      .finally(() => client.close()),
+  )
 }
 
 async function login(
@@ -308,7 +308,7 @@ test('change-password: directory-managed users are refused', async () => {
       { username: 'diruser', role: 'reader' },
     )
     // simulate an LDAP-provisioned row (no directory needed for the guard)
-    const db = createClient({ url: `file:${dbPath}` })
+    const db = await externalClient(dbPath)
     await db.execute({
       sql: 'UPDATE users SET auth_source = ?, ldap_dn = ? WHERE username = ?',
       args: ['ldap', 'cn=diruser,ou=people', 'diruser'],

@@ -13,6 +13,7 @@
 import { createHash } from 'node:crypto'
 import { userInfo } from 'node:os'
 
+import type { Row, Value } from '@libsql/client'
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
@@ -76,17 +77,27 @@ export function computeRowHash(row: AuditRowValues): string {
  * Row access across libsql surface differences: a plain object row
  * (local file transactions) or a libsql Row with .get()/index access.
  */
-function rowValue(row: unknown, key: string, index: number): unknown {
-  const r = row as Record<string, unknown> & {
-    get?: (i: number) => unknown
+/**
+ * Read a cell by name, then legacy `.get(index)`, then position. The
+ * pinned libsql driver exposes `Row` (name + numeric index access);
+ * older drivers exposed `.get(index)` — the legacy branch is a
+ * compatibility belt, not the normal path.
+ */
+function rowValue(row: Row, key: string, index: number): Value {
+  const named = row[key]
+  if (named !== undefined) {
+    return named
   }
-  if (typeof r[key] !== 'undefined') {
-    return r[key]
+  // SAFETY: legacy row objects (pre-positional-row drivers) carry a
+  // `.get(index)` method that the current Row type does not declare;
+  // the narrow cast only names that optional method.
+  const legacy = row as unknown as { get?: (i: number) => Value }
+  if (typeof legacy.get === 'function') {
+    return legacy.get(index)
   }
-  if (typeof r.get === 'function') {
-    return r.get(index)
-  }
-  return (row as unknown as unknown[])[index]
+  // SAFETY: Row's numeric index signature is libsql's positional cell
+  // access itself — reading by position needs no cast.
+  return row[index]
 }
 
 /**
@@ -94,8 +105,31 @@ function rowValue(row: unknown, key: string, index: number): unknown {
  * concurrent writers (multiple CLI processes, RPC connections) cannot
  * fork the chain: the read of the previous hash and the insert happen
  * under the same write lock.
+ *
+ * The transaction lock is per *client*: two overlapping recordAudit calls
+ * on the same in-process client interleave their transactions and fail
+ * with SQLITE_BUSY ("cannot commit transaction - SQL statements in
+ * progress") — the classic trigger is the fire-and-forget conn.closed
+ * audit racing the next request's audit. Every audit write on a client
+ * therefore goes through one promise chain: sequential by construction.
  */
-export async function recordAudit(db: DB, e: AuditEvent): Promise<void> {
+const auditWriteChain = new WeakMap<object, Promise<void>>()
+
+export function recordAudit(db: DB, e: AuditEvent): Promise<void> {
+  const chain = auditWriteChain.get(db) ?? Promise.resolve()
+  const next = chain
+    .catch(() => {
+      // a failed predecessor must not poison the rest of the chain
+    })
+    .then(() => recordAuditTx(db, e))
+  auditWriteChain.set(db, next)
+  return next
+}
+
+async function recordAuditTx(db: DB, e: AuditEvent): Promise<void> {
+  // SAFETY: drizzle's libsql driver keeps the underlying client on a
+  // private $client property; the transaction API is what the chain
+  // needs, and it is stable across the pinned driver version.
   const client = (
     db as unknown as {
       $client: { transaction(mode: string): Promise<TransactionLike> }
@@ -165,10 +199,15 @@ export async function recordAudit(db: DB, e: AuditEvent): Promise<void> {
   }
 }
 
-/** Minimal structural shape of a libsql result set / transaction. */
+/**
+ * Minimal structural shape of a libsql result set / transaction.
+ * SAFETY: rows are the driver's real `Row` (name + positional access
+ * over the `Value` union); no per-column static type exists, so the
+ * named union is the most specific honest shape.
+ */
 interface ExecuteResult {
   columns: string[]
-  rows: Array<{ get(i: number): unknown }>
+  rows: Row[]
 }
 
 interface TransactionLike {
@@ -202,6 +241,7 @@ export interface VerifyResult {
  *    content hash must recompute to its stored row_hash
  */
 export async function verifyChain(db: DB): Promise<VerifyResult> {
+  // SAFETY: same private $client invariant as recordAuditTx — see there.
   const client = (db as unknown as { $client: ExecuteClient }).$client
   const r = await client.execute(
     `SELECT seq, at, actor_id, actor_name, action, entity_type, entity_id,
@@ -214,6 +254,8 @@ export async function verifyChain(db: DB): Promise<VerifyResult> {
     cols.forEach((c, i) => {
       o[c] = rowValue(row, c, i)
     })
+    // SAFETY: every audit_log column is mapped above; row_hash is the
+    // chain column and is non-empty for chained rows by construction.
     return o as unknown as AuditRowValues & { row_hash: string }
   })
 
@@ -382,6 +424,8 @@ export async function auditEntityRow(
       .from(entitySchema.contacts)
       .where(eq(entitySchema.contacts.id, entityId))
     if (rows.length > 0) {
+      // SAFETY: entity column map — see the comment on the contacts
+      // branch; the other entity branches share the same invariant.
       return rows[0] as unknown as Record<string, unknown>
     }
     return null
@@ -392,6 +436,7 @@ export async function auditEntityRow(
       .from(entitySchema.companies)
       .where(eq(entitySchema.companies.id, entityId))
     if (rows.length > 0) {
+      // SAFETY: entity column map — same invariant as the contacts branch.
       return rows[0] as unknown as Record<string, unknown>
     }
     return null
@@ -402,6 +447,7 @@ export async function auditEntityRow(
       .from(entitySchema.deals)
       .where(eq(entitySchema.deals.id, entityId))
     if (rows.length > 0) {
+      // SAFETY: entity column map — same invariant as the contacts branch.
       return rows[0] as unknown as Record<string, unknown>
     }
     return null
@@ -412,6 +458,7 @@ export async function auditEntityRow(
       .from(entitySchema.tasks)
       .where(eq(entitySchema.tasks.id, entityId))
     if (rows.length > 0) {
+      // SAFETY: entity column map — same invariant as the contacts branch.
       return rows[0] as unknown as Record<string, unknown>
     }
     return null
@@ -422,6 +469,7 @@ export async function auditEntityRow(
       .from(entitySchema.activities)
       .where(eq(entitySchema.activities.id, entityId))
     if (rows.length > 0) {
+      // SAFETY: entity column map — same invariant as the contacts branch.
       return rows[0] as unknown as Record<string, unknown>
     }
   }

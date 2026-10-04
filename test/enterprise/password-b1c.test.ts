@@ -11,11 +11,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createClient } from '@libsql/client'
-
 import {
   bootstrapOwner,
   connect,
+  externalClient,
   freshDb,
   startServer,
   type TestServer,
@@ -57,14 +56,22 @@ async function issueToken(
   }
 }
 
-function setChangedAt(dbPath: string, username: string, iso: string | null) {
-  const client = createClient({ url: `file:${dbPath}` })
-  return client
-    .execute({
+async function setChangedAt(
+  dbPath: string,
+  username: string,
+  iso: string | null,
+): Promise<void> {
+  // externalClient carries a busy timeout: the server (a separate
+  // process) may be mid-write-transaction when this lands.
+  const client = await externalClient(dbPath)
+  try {
+    await client.execute({
       sql: 'UPDATE users SET password_changed_at = ? WHERE username = ?',
       args: [iso, username],
     })
-    .finally(() => client.close())
+  } finally {
+    client.close()
+  }
 }
 
 test('login carries must_change: true after reset, false after change', async () => {

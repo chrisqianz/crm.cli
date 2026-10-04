@@ -10,11 +10,10 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { createClient } from '@libsql/client'
-
 import {
   bootstrapOwner,
   connect,
+  externalClient,
   freshDb,
   startServer,
   type TestServer,
@@ -36,7 +35,7 @@ test("delete cascades tokens and unowns the target's rows", async () => {
     })
     expect(token.token).toMatch(/^crm_/)
     // give doomed owned rows in all three owner tables
-    const client = createClient({ url: `file:${dbPath}` })
+    const client = await externalClient(dbPath)
     await client.execute({
       sql: "INSERT INTO contacts (id, name, owner, created_at, updated_at) VALUES ('ct_doomed1', 'Doomed Contact', 'doomed', datetime('now'), datetime('now'))",
     })
@@ -54,7 +53,7 @@ test("delete cascades tokens and unowns the target's rows", async () => {
     expect(r.username).toBe('doomed')
 
     // the user row and every token are gone
-    const after = createClient({ url: `file:${dbPath}` })
+    const after = await externalClient(dbPath)
     const users = await after.execute({
       sql: 'SELECT COUNT(*) AS n FROM users WHERE username = ?',
       args: ['doomed'],
@@ -104,7 +103,7 @@ test('self-delete is refused', async () => {
       admin.call('admin.user.delete', { username: 'admin' }),
     ).rejects.toThrow(/cannot delete your own account/)
     // and nobody is gone
-    const check = createClient({ url: `file:${dbPath}` })
+    const check = await externalClient(dbPath)
     const rows = await check.execute({
       sql: 'SELECT COUNT(*) AS n FROM users',
     })
@@ -186,7 +185,7 @@ test('crm admin user delete: typed confirmation', async () => {
     const code1 = await p1.exited
     expect(code1).toBe(1)
     expect(err1 + out1).toContain('Aborted')
-    const check1 = createClient({ url: `file:${dbPath}` })
+    const check1 = await externalClient(dbPath)
     const still = await check1.execute({
       sql: 'SELECT COUNT(*) AS n FROM users WHERE username = ?',
       args: ['doomed'],
@@ -207,7 +206,7 @@ test('crm admin user delete: typed confirmation', async () => {
     const code2 = await p2.exited
     expect(code2).toBe(0)
     expect(out2).toContain('doomed')
-    const check2 = createClient({ url: `file:${dbPath}` })
+    const check2 = await externalClient(dbPath)
     const gone = await check2.execute({
       sql: 'SELECT COUNT(*) AS n FROM users WHERE username = ?',
       args: ['doomed'],
