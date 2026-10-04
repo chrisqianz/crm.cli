@@ -755,6 +755,8 @@ function handleAdmin(
       return adminUserDisableEnable(db, ctx, identity, params, false)
     case 'admin.user.reset-password':
       return adminUserResetPassword(db, ctx, identity, params)
+    case 'admin.user.delete':
+      return adminUserDelete(db, ctx, identity, params)
     case 'admin.token.create':
       return adminTokenCreate(db, ctx, identity, params)
     case 'admin.token.list':
@@ -974,6 +976,50 @@ async function adminUserResetPassword(
     after_json: JSON.stringify({ username, must_change_password: true }),
   })
   return { username, temporary_password: temporaryPassword }
+}
+
+async function adminUserDelete(
+  db: DB,
+  ctx: { ip: string },
+  identity: Identity,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const username = strParam(params, 'username')
+  const u = await findUser(db, username)
+  if (!u) {
+    throw new ServerError('NOT_FOUND', `user "${username}" not found`)
+  }
+  if (u.id === identity.id) {
+    // No self-service off-ramp, deliberately: the only way out of an
+    // account is an admin deleting it.
+    throw new ServerError('FORBIDDEN', 'cannot delete your own account')
+  }
+  // Business rows survive the person: ownership data is kept, only the
+  // owner reference is dropped. Tokens cascade through the FK.
+  await db
+    .update(schema.contacts)
+    .set({ owner: null })
+    .where(eq(schema.contacts.owner, u.username))
+  await db
+    .update(schema.deals)
+    .set({ owner: null })
+    .where(eq(schema.deals.owner, u.username))
+  await db
+    .update(schema.tasks)
+    .set({ owner: null })
+    .where(eq(schema.tasks.owner, u.username))
+  await db.delete(schema.users).where(eq(schema.users.id, u.id))
+  await recordAudit(db, {
+    actor_id: identity.id,
+    actor_name: identity.username,
+    action: 'admin.user.delete',
+    source: 'rpc',
+    ip: ctx.ip,
+    entity_type: 'user',
+    entity_id: u.id,
+    before_json: JSON.stringify(publicUser(u)),
+  })
+  return { username: u.username }
 }
 
 async function changePassword(

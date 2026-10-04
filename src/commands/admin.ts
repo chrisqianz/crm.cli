@@ -1,7 +1,7 @@
 import type { Command } from 'commander'
 
 import { die, gInsecure } from '../lib/helpers'
-import { promptSecret } from '../lib/prompt'
+import { promptLine, promptSecret } from '../lib/prompt'
 import { RpcClient } from '../lib/rpc'
 import { loadSession, resolveServerAddr, saveSession } from '../lib/session'
 
@@ -267,6 +267,33 @@ export function registerAdminCommands(program: Command): void {
           `Password reset for ${opts.username} (one-time temporary): ${res.temporary_password}`,
         )
         console.log('The user must change it at next login.')
+      })
+    })
+
+  user
+    .command('delete')
+    .description(
+      'Delete a user (tokens cascade; owned contacts/deals/tasks become unowned)',
+    )
+    .requiredOption('--username <name>', 'Username to delete')
+    .option(
+      '--server <host:port>',
+      'Server address (default: CRM_SERVER or saved)',
+    )
+    .option('--insecure', 'Skip TLS certificate verification')
+    .action(async (opts: AdminOpts & { username: string }) => {
+      // Deletion is typed, not flagged: re-typing the username is the
+      // confirmation. promptLine reads one line — TTY or pipe alike.
+      const typed = await promptLine('Type the username to confirm: ')
+      if (typed !== opts.username) {
+        die('Aborted.')
+      }
+      await withSession(opts, async (client) => {
+        const res = await client.call<{ username: string }>(
+          'admin.user.delete',
+          { username: opts.username },
+        )
+        console.log(`Deleted ${res.username}`)
       })
     })
 

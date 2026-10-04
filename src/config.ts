@@ -223,17 +223,69 @@ function findConfigFile(startDir: string): string | null {
   return null
 }
 
-function mergeConfig(
-  base: CRMConfig,
-  // biome-ignore lint/suspicious/noExplicitAny: TOML parse output has no static type
-  override: Record<string, any>,
-): CRMConfig {
+/**
+ * The shape a TOML config file may carry: every section optional, every
+ * field optional. This is the one contract between raw file values and
+ * CRMConfig — mergeConfig is the only place file values touch the typed
+ * config, so it is worth giving them a real type instead of any.
+ */
+interface ConfigOverride {
+  activity?: { types?: unknown[] }
+  auth?: {
+    lockout_threshold?: number
+    lockout_minutes?: number
+    password_min_length?: number
+    password_max_age_days?: number
+    default_role?: string
+    login_rate_per_minute?: number
+    login_user_rate_per_minute?: number
+  }
+  backup?: { destination?: string }
+  database?: { path?: string }
+  defaults?: { format?: string }
+  hooks?: Record<string, string>
+  ldap?: {
+    enabled?: boolean
+    url?: string
+    starttls?: boolean
+    base_dn?: string
+    bind_dn?: string
+    bind_password_env?: string
+    user_filter?: string
+    group_base_dn?: string
+    roles?: Record<string, string>
+    tls_ca_file?: string
+    tls_skip_verify?: boolean
+    timeout_ms?: number
+    connect_timeout_ms?: number
+  }
+  mail?: {
+    host?: string
+    port?: number
+    user?: string
+    from?: string
+    secure?: boolean
+  }
+  mount?: {
+    default_path?: string
+    readonly?: boolean
+    allow_other?: boolean
+    max_recent_activity?: number
+    search_limit?: number
+  }
+  phone?: { default_country?: string; display?: string }
+  pipeline?: { stages?: string[]; won_stage?: string; lost_stage?: string }
+  remote?: { server?: string; insecure?: boolean }
+  serve?: { port?: number; host?: string; cert?: string; key?: string }
+}
+
+function mergeConfig(base: CRMConfig, override: ConfigOverride): CRMConfig {
   const result = { ...base }
   // Booleans and numbers must be tested for presence, not truthiness: a
   // config that says `starttls = false` or `login_rate_per_minute = 0`
   // means something, and ignoring it silently is how a security knob
   // quietly stops meaning what it says.
-  const given = (v: unknown): boolean => v !== undefined && v !== null
+  const given = <T>(v: T): v is NonNullable<T> => v !== undefined && v !== null
   if (override.database?.path) {
     result.database = { ...result.database, path: override.database.path }
   }
