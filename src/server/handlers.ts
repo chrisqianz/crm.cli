@@ -1198,7 +1198,17 @@ async function adminTokenRevoke(
 
 // ── B5: server.status (liveness/overview) ──
 
+// Injected at build time via --define (package.json build script); the
+// readFileSync fallback is for dev/test where the define is absent.
+declare const __PKG_VERSION__: string | undefined
+
 function serverVersion(): string {
+  // Only the define is build-time truth: a package.json path relative to
+  // the bundled dist/cli.js points outside the repo, so the file read is
+  // a dev-time convenience, never the distributed path.
+  if (typeof __PKG_VERSION__ !== 'undefined') {
+    return __PKG_VERSION__
+  }
   try {
     const pkg = JSON.parse(
       readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
