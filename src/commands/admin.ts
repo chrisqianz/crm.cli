@@ -112,6 +112,11 @@ export function registerAdminCommands(program: Command): void {
             server: `${host}:${port}`,
             username: res.user.username,
             token: res.token,
+            // Persist the same TLS posture the RPC connection used: the
+            // first-boot server presents self-signed material, so without
+            // this the freshly saved session fails verification on every
+            // subsequent command until a re-login with --insecure.
+            insecure: !!opts.insecure || gInsecure,
           })
           if (hadSession) {
             console.log('Session updated to the new owner identity.')
