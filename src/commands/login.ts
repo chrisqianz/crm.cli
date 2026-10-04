@@ -51,7 +51,8 @@ export function registerLoginCommands(program: Command): void {
         // and can type a different one. Non-TTY (piped/automated) keeps
         // the machine behavior of reusing the saved user without reading
         // a stdin line that was meant for something else.
-        const savedUser = loadSession()?.username
+        const savedSession = loadSession()
+        const savedUser = savedSession?.username
         let username: string | undefined = opts.username
         if (username === undefined && savedUser !== undefined) {
           username = process.stdin.isTTY
@@ -61,13 +62,27 @@ export function registerLoginCommands(program: Command): void {
         if (username === undefined) {
           username = await promptLine('Username: ')
         }
+        // A server that was reached with a self-signed cert before must
+        // stay reachable on re-login: inherit the saved session's trust
+        // instead of demanding the flag (or a trusted CA) all over again.
+        // Mirrors the whoami/connect decision.
+        const insecure =
+          !!opts.insecure ||
+          gInsecure ||
+          savedSession?.insecure === true ||
+          process.env.CRM_INSECURE === '1'
         const password = opts.password ?? (await promptSecret('Password: '))
-        const insecure = !!opts.insecure || gInsecure
         const client = await RpcClient.connect(port, host, {
           insecure,
-        }).catch((e: Error) =>
-          die(`cannot connect to ${host}:${port}: ${e.message}`),
-        )
+        }).catch((e: Error) => {
+          // A trust failure is the most common first-contact error with
+          // self-signed dev servers: say what it means and what fixes it
+          // instead of dumping the raw TLS message.
+          const trustHint = /certificate|self.?signed|ssl|tls/i.test(e.message)
+            ? "\n  this server's certificate is not trusted — retry with --insecure (dev) or trust its CA cert (production; see the console install guide)"
+            : ''
+          die(`cannot connect to ${host}:${port}: ${e.message}${trustHint}`)
+        })
         try {
           const res = await client.call<{
             token: string

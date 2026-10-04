@@ -34,7 +34,7 @@ interface Pty {
 
 function ptyLogin(
   args: string[],
-  opts: { seed?: (home: string) => void } = {},
+  opts: { seed?: (home: string) => void; env?: Record<string, string> } = {},
 ): Pty {
   let screen = ''
   const decode = new TextDecoder()
@@ -56,6 +56,7 @@ function ptyLogin(
       // off — the flag that would turn it off is a separate bug.
       NODE_EXTRA_CA_CERTS: join(homedir(), '.crm', 'certs', 'server.crt'),
       HOME: home,
+      ...opts.env,
     },
   })
   return {
@@ -176,7 +177,7 @@ describe('crm login at a real terminal', () => {
           join(home, '.crm', 'credentials'),
           JSON.stringify({
             server: `127.0.0.1:${srv.port}`,
-            username: 'owner',
+            username: 'admin',
             token: 'stale-token',
           }),
         )
@@ -186,7 +187,7 @@ describe('crm login at a real terminal', () => {
       // the saved username must be VISIBLE as the default, not invisible
       expect(
         await settled(
-          () => session.screen().includes('Username (owner)'),
+          () => session.screen().includes('Username (admin)'),
           10_000,
         ),
       ).toBe(true)
@@ -196,7 +197,14 @@ describe('crm login at a real terminal', () => {
         await settled(() => /password/i.test(session.screen()), 10_000),
       ).toBe(true)
       session.send('Owner-pass-123\n')
-      await expectFinished(session, 'owner')
+      await expectFinished(session, 'admin')
+      // the saved session must be a FRESH one: a new token (not the
+      // seeded stale one) and no connection failure on the screen
+      const saved = JSON.parse(
+        readFileSync(join(session.home, '.crm', 'credentials'), 'utf8'),
+      ) as { token: string }
+      expect(saved.token).not.toBe('stale-token')
+      expect(session.screen()).not.toMatch(/cannot connect|self.?signed/i)
     } finally {
       try {
         session.proc.kill(9)
@@ -204,5 +212,103 @@ describe('crm login at a real terminal', () => {
         // already gone
       }
     }
+  }, 90_000)
+
+  test('login inherits insecure from the saved session', async () => {
+    // Live-testing regression: the saved session carries insecure=true
+    // (self-signed server), but login did not read it — a plain
+    // 'crm login' died with 'self signed certificate' even though the
+    // previous login (and whoami) had established the trust context.
+    // No --insecure flag and no trusted CA env: the saved session must
+    // carry the trust, exactly like a real user shell.
+    if (!server) {
+      server = await startServer(db.dbPath)
+      await bootstrapOwner(server)
+    }
+    const srv = server
+    const session = ptyLogin(['--server', `127.0.0.1:${srv.port}`], {
+      env: { NODE_EXTRA_CA_CERTS: '' },
+      seed: (home) => {
+        mkdirSync(join(home, '.crm'))
+        writeFileSync(
+          join(home, '.crm', 'credentials'),
+          JSON.stringify({
+            server: `127.0.0.1:${srv.port}`,
+            username: 'admin',
+            token: 'stale-token',
+            insecure: true,
+          }),
+        )
+      },
+    })
+    try {
+      // no --insecure flag: the saved session must carry the trust
+      expect(
+        await settled(
+          () => session.screen().includes('Username (admin)'),
+          10_000,
+        ),
+      ).toBe(true)
+      session.send('\n')
+      expect(
+        await settled(() => /password/i.test(session.screen()), 10_000),
+      ).toBe(true)
+      session.send('Owner-pass-123\n')
+      await expectFinished(session, 'admin')
+      // proof of a real round-trip against an UNTRUSTED self-signed cert:
+      // the token was replaced, and no trust failure was printed
+      const saved = JSON.parse(
+        readFileSync(join(session.home, '.crm', 'credentials'), 'utf8'),
+      ) as { token: string }
+      expect(saved.token).not.toBe('stale-token')
+      expect(session.screen()).not.toMatch(/cannot connect|self.?signed/i)
+    } finally {
+      try {
+        session.proc.kill(9)
+      } catch {
+        // already gone
+      }
+    }
+  }, 90_000)
+
+  test('a first-time trust failure tells the user how to proceed', async () => {
+    // Live-testing regression: 'crm login' died on a self-signed server
+    // with a bare 'self signed certificate' — no hint that --insecure or
+    // trusting the CA cert is the way forward.
+    if (!server) {
+      server = await startServer(db.dbPath)
+      await bootstrapOwner(server)
+    }
+    const srv = server
+    const home = mkdtempSync(join(tmpdir(), 'crm-tty-home-'))
+    const proc = Bun.spawn(
+      [
+        'bun',
+        'run',
+        CRM,
+        'login',
+        '--server',
+        `127.0.0.1:${srv.port}`,
+        '--username',
+        'admin',
+        '--password',
+        'Owner-pass-123',
+      ],
+      {
+        stdout: 'pipe',
+        stderr: 'pipe',
+        env: {
+          ...process.env,
+          CRM_CONFIG: '',
+          NODE_EXTRA_CA_CERTS: '',
+          HOME: home,
+        },
+      },
+    )
+    const code = await proc.exited
+    const out = await new Response(proc.stderr).text()
+    expect(code).toBe(1)
+    expect(out).toMatch(/self.?signed|certificate/i)
+    expect(out).toMatch(/--insecure/i)
   }, 90_000)
 })
