@@ -269,3 +269,101 @@ describe('web admin console', () => {
     })
   }, 30_000)
 })
+
+// B3: the Users tab's management surface. The console's JS is the thin
+// part — every button is one /api/call against the same RBAC'd handlers,
+// so the tests exercise those calls over the HTTP boundary the browser
+// actually uses, plus the HTML wiring that carries them.
+describe('B3: users tab management', () => {
+  async function ownerCall(
+    base: string,
+  ): Promise<
+    (
+      method: string,
+      params?: Record<string, unknown>,
+    ) => Promise<{ status: number; body: unknown }>
+  > {
+    const login = (await (
+      await fetch(`${base}/api/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'admin', password: 'Owner-pass-123' }),
+      })
+    ).json()) as { token: string }
+    return (method, params = {}) =>
+      fetch(`${base}/api/call`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${login.token}`,
+        },
+        body: JSON.stringify({ method, params }),
+      }).then(async (r) => ({ status: r.status, body: await r.json() }))
+  }
+
+  test('console HTML carries the reset modal and user table wiring', async () => {
+    await withConsole(async (base) => {
+      const html = await (await fetch(`${base}/`)).text()
+      expect(html).toContain('id="resetModal"')
+      expect(html).toContain('id="resetPw"')
+      expect(html).toContain('data-rst')
+      expect(html).toContain('data-del')
+      expect(html).toContain('data-role')
+    })
+  }, 30_000)
+
+  test('set-role over /api/call', async () => {
+    await withConsole(async (base) => {
+      const call = await ownerCall(base)
+      const created = await call('admin.user.create', {
+        username: 'b3.jane',
+        role: 'writer',
+      })
+      expect(created.status).toBe(200)
+      const changed = await call('admin.user.set-role', {
+        username: 'b3.jane',
+        role: 'reader',
+      })
+      expect(changed.status).toBe(200)
+      expect(
+        (changed.body as { result: { user: { role: string } } }).result.user
+          .role ?? '',
+      ).toBe('reader')
+    })
+  }, 30_000)
+
+  test('reset over /api/call returns the one-time password', async () => {
+    await withConsole(async (base) => {
+      const call = await ownerCall(base)
+      await call('admin.user.create', { username: 'b3.bob', role: 'writer' })
+      const reset = await call('admin.user.reset-password', {
+        username: 'b3.bob',
+      })
+      expect(reset.status).toBe(200)
+      const pw = (reset.body as { result: { temporary_password: string } })
+        .result.temporary_password
+      expect(pw.length).toBeGreaterThanOrEqual(16)
+    })
+  }, 30_000)
+
+  test('delete over /api/call', async () => {
+    await withConsole(async (base) => {
+      const call = await ownerCall(base)
+      await call('admin.user.create', { username: 'b3.gone', role: 'reader' })
+      const del = await call('admin.user.delete', { username: 'b3.gone' })
+      expect(del.status).toBe(200)
+      const list = await call('admin.user.list')
+      const users = (list.body as { result: { users: { username: string }[] } })
+        .result.users
+      expect(users.some((u) => u.username === 'b3.gone')).toBe(false)
+    })
+  }, 30_000)
+
+  test('owner cannot delete own account over /api/call', async () => {
+    await withConsole(async (base) => {
+      const call = await ownerCall(base)
+      const self = await call('admin.user.delete', { username: 'admin' })
+      expect(self.status).toBe(403)
+    })
+  }, 30_000)
+})

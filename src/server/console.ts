@@ -183,6 +183,21 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     </section>
   </section>
 
+  <!-- One-time password modal (B3 user reset) -->
+  <div id="resetModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:50">
+    <div class="card" style="max-width:420px;margin:80px auto">
+      <h2>One-time password for <span id="resetUser" class="mono"></span></h2>
+      <p class="sub">Shown once — it cannot be retrieved again. The user must change it at next login.</p>
+      <div class="grid" style="gap:10px">
+        <input id="resetPw" class="mono" readonly style="width:100%">
+        <div class="row" style="justify-content:space-between">
+          <button id="resetCopy" class="ghost">Copy</button>
+          <button id="resetClose">Done</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Must-change password gate (B1c): full-screen modal on login, persistent
        banner after dismissal -->
   <div id="pwBanner" class="hidden" style="background:var(--warn);color:#1a1200;padding:8px 14px;border-radius:8px;margin-bottom:14px;font-size:13px">Password needs changing — <button id="pwNowBtn" class="ghost" style="padding:2px 10px;font-size:12px">change now</button></div>
@@ -283,18 +298,46 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
       el("usersBody").innerHTML = rows.map(function (u) {
         var status = u.disabled ? '<span class="pill off">disabled</span>'
           : (u.locked ? '<span class="pill on">locked</span>' : '<span class="pill on">active</span>');
-        var btns = "";
+        var roleSel = ["owner", "admin", "writer", "reader"].map(function (r) {
+          return '<option' + (r === u.role ? ' selected' : '') + '>' + r + '</option>';
+        }).join("");
+        var btns = '<button class="ghost" data-rst="1" data-u="' + esc(u.username) + '">reset</button> ';
+        var delDisabled = who && u.username === who.username;
+        btns += '<button class="ghost danger" data-del="1" data-u="' + esc(u.username) + '"' + (delDisabled ? ' disabled title="you cannot delete yourself"' : '') + '>delete</button> ';
         if (u.role !== "owner" && !u.disabled) {
-          btns = '<button class="ghost" data-aug="1" data-u="' + esc(u.username) + '">disable</button> ';
+          btns += '<button class="ghost" data-aug="1" data-u="' + esc(u.username) + '">disable</button> ';
         }
         if (u.disabled) {
-          btns = '<button class="ghost" data-auen="1" data-u="' + esc(u.username) + '">enable</button> ';
+          btns += '<button class="ghost" data-auen="1" data-u="' + esc(u.username) + '">enable</button> ';
         }
         return "<tr><td class='mono'>" + esc(u.username) + "</td>" +
-          "<td><span class='pill " + esc(u.role) + "'>" + esc(u.role) + "</span></td>" +
+          "<td><select data-role='1' data-u='" + esc(u.username) + "' style='min-width:86px'>" + roleSel + "</select></td>" +
           "<td>" + esc(u.email || "—") + "</td><td>" + status + "</td>" +
           "<td>" + fmtDate(u.created_at) + "</td><td>" + btns + "</td></tr>";
       }).join("");
+      el("usersBody").querySelectorAll("select[data-role]").forEach(function (s) {
+        s.onchange = function () {
+          call("admin.user.set-role", { username: s.dataset.u, role: s.value }).then(loadUsers, function (e) { showMsg("nuMsg", "err", e.message); loadUsers(); });
+        };
+      });
+      el("usersBody").querySelectorAll("button[data-rst]").forEach(function (b) {
+        b.onclick = function () {
+          call("admin.user.reset-password", { username: b.dataset.u }).then(function (d) {
+            el("resetUser").textContent = b.dataset.u;
+            el("resetPw").value = d.result.temporary_password;
+            el("resetModal").classList.remove("hidden");
+            el("resetPw").focus();
+            el("resetPw").select();
+          }).catch(function (e) { showMsg("nuMsg", "err", e.message); });
+        };
+      });
+      el("usersBody").querySelectorAll("button[data-del]").forEach(function (b) {
+        b.onclick = function () {
+          var u = b.dataset.u;
+          if (!confirm("Delete user " + u + "? Their tokens are revoked and their owned rows become unowned. This cannot be undone.")) return;
+          call("admin.user.delete", { username: u }).then(loadUsers, function (e) { showMsg("nuMsg", "err", e.message); });
+        };
+      });
       el("usersBody").querySelectorAll("button[data-aug]").forEach(function (b) {
         b.onclick = function () { call("admin.user.disable", { username: b.dataset.u }).then(loadUsers, function (e) { showMsg("nuMsg", "err", e.message); }); };
       });
@@ -406,6 +449,18 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     el("mustChangeModal").classList.remove("hidden");
     el("pwBanner").classList.add("hidden");
   }
+  el("resetClose").onclick = function () { el("resetModal").classList.add("hidden"); };
+  el("resetCopy").onclick = function () {
+    var pw = el("resetPw");
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(pw.value).then(function () {
+        showMsg("nuMsg", "ok", "Copied to clipboard.");
+      }, function () { pw.select(); });
+    } else {
+      pw.select();
+    }
+  };
+
   el("mcBtn").onclick = function () {
     call("auth.change-password", { current: mustChangeOld, "new": el("mcPass").value }).then(function () {
       mustChangeOld = null;
