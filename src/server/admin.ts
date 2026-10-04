@@ -263,6 +263,7 @@ function configView(ctx: Ctx): Record<string, unknown> {
       lockout_threshold: c.auth.lockout_threshold,
       lockout_minutes: c.auth.lockout_minutes,
       password_min_length: c.auth.password_min_length,
+      password_max_age_days: c.auth.password_max_age_days,
       login_rate_per_minute: c.auth.login_rate_per_minute,
       login_user_rate_per_minute: c.auth.login_user_rate_per_minute,
     },

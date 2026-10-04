@@ -182,6 +182,21 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
       </div>
     </section>
   </section>
+
+  <!-- Must-change password gate (B1c): full-screen modal on login, persistent
+       banner after dismissal -->
+  <div id="pwBanner" class="hidden" style="background:var(--warn);color:#1a1200;padding:8px 14px;border-radius:8px;margin-bottom:14px;font-size:13px">Password needs changing — <button id="pwNowBtn" class="ghost" style="padding:2px 10px;font-size:12px">change now</button></div>
+  <div id="mustChangeModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,0.65);z-index:50">
+    <div class="card" style="max-width:380px;margin:80px auto">
+      <h2>Change your password</h2>
+      <p class="sub">An administrator set this password, or the current one has expired. Choose a new one before continuing.</p>
+      <div class="grid" style="gap:12px">
+        <div><label>New password</label><input id="mcPass" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="msg" id="mcMsg"></div>
+      <div class="row" style="margin-top:14px;justify-content:space-between"><button id="mcCancel" class="ghost">Later</button><button id="mcBtn">Change password</button></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -189,6 +204,7 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
   "use strict";
   var token = localStorage.getItem("crm_token") || null;
   var who = null;
+  var mustChangeOld = null;
 
   function el(id) { return document.getElementById(id); }
   function esc(s) {
@@ -372,15 +388,38 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     el("loginBtn").disabled = true;
     try {
       var d = await api("/api/login", { method: "POST", body: JSON.stringify({ username: el("loginUser").value, password: el("loginPass").value }) });
+      mustChangeOld = d.must_change === true ? el("loginPass").value : null;
       token = d.token;
       localStorage.setItem("crm_token", token);
       who = d.user ? { username: d.user.username, role: d.user.role } : null;
       el("loginPass").value = "";
       setAuthed();
+      if (d.must_change === true) {
+        el("mustChangeModal").classList.remove("hidden");
+      }
     } catch (e) {
       showMsg("loginMsg", "err", e.message);
     } finally { el("loginBtn").disabled = false; }
   }
+
+  function openMustChange() {
+    el("mustChangeModal").classList.remove("hidden");
+    el("pwBanner").classList.add("hidden");
+  }
+  el("mcBtn").onclick = function () {
+    call("auth.change-password", { current: mustChangeOld, "new": el("mcPass").value }).then(function () {
+      mustChangeOld = null;
+      el("mcPass").value = "";
+      el("mustChangeModal").classList.add("hidden");
+      el("pwBanner").classList.add("hidden");
+      showMsg("mcMsg", "ok", "Password changed.");
+    }).catch(function (e) { showMsg("mcMsg", "err", e.message); });
+  };
+  el("mcCancel").onclick = function () {
+    el("mustChangeModal").classList.add("hidden");
+    el("pwBanner").classList.remove("hidden");
+  };
+  el("pwNowBtn").onclick = openMustChange;
 
   el("logout").onclick = function () {
     localStorage.removeItem("crm_token");

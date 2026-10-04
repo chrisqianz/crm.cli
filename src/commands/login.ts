@@ -60,6 +60,7 @@ export function registerLoginCommands(program: Command): void {
           const res = await client.call<{
             token: string
             user: { username: string; role: string }
+            must_change?: boolean
           }>('auth.login', { username, password })
           saveSession({
             server: `${host}:${port}`,
@@ -71,6 +72,26 @@ export function registerLoginCommands(program: Command): void {
             `Logged in as ${res.user.username} (${res.user.role}) → ${host}:${port}`,
           )
           console.log('Session saved to ~/.crm/credentials (0600).')
+          if (res.must_change === true) {
+            if (process.stdin.isTTY) {
+              console.log('This password needs to be changed now.')
+              const fresh = await promptSecret('New password: ')
+              try {
+                await client.call('auth.change-password', {
+                  current: password,
+                  new: fresh,
+                })
+                console.log('Password changed.')
+              } catch (e) {
+                die(
+                  `password must be changed — run crm password change (${(e as Error).message})`,
+                )
+              }
+            } else {
+              // The session is saved; finish the change out of band.
+              die('password must be changed — run crm password change')
+            }
+          }
         } catch (e) {
           die(`login failed: ${(e as Error).message}`)
         } finally {

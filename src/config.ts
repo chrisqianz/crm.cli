@@ -19,6 +19,12 @@ export interface CRMConfig {
     lockout_minutes: number
     password_min_length: number
     /**
+     * B1c: force a password change once the password is older than this
+     * many days. 0 (default) disables expiry. A legacy NULL
+     * password_changed_at counts as expired only when expiry is enabled.
+     */
+    password_max_age_days: number
+    /**
      * P6: role assigned to a JIT-provisioned directory user whose group
      * membership maps to nothing. "none" (default) = deny everything.
      */
@@ -161,6 +167,7 @@ function defaultConfig(): CRMConfig {
       lockout_threshold: 5,
       lockout_minutes: 15,
       password_min_length: 12,
+      password_max_age_days: 0,
       default_role: 'none',
       login_rate_per_minute: 60,
       login_user_rate_per_minute: 15,
@@ -313,6 +320,9 @@ function mergeConfig(
         : {}),
       ...(override.auth.password_min_length
         ? { password_min_length: override.auth.password_min_length }
+        : {}),
+      ...(given(override.auth.password_max_age_days)
+        ? { password_max_age_days: override.auth.password_max_age_days }
         : {}),
       ...(override.auth.default_role
         ? { default_role: override.auth.default_role }

@@ -368,8 +368,38 @@ async function authLogin(
   const token = await issueToken(db, u.id, `session-${ulid()}`, null)
   return {
     identity: { id: u.id, username: u.username, role: u.role },
-    result: { token, user: publicUser(u) },
+    result: {
+      token,
+      user: publicUser(u),
+      must_change: passwordMustChange(u, config),
+    },
   }
+}
+
+/**
+ * B1c: must the user change the password right now? The admin-set flag
+ * always wins; expiry applies only when enabled (max_age_days > 0), and a
+ * legacy NULL password_changed_at counts as expired in that case.
+ */
+function passwordMustChange(
+  u: {
+    must_change_password: number | null
+    password_changed_at: string | null
+  },
+  config: CRMConfig,
+): boolean {
+  if ((u.must_change_password ?? 0) === 1) {
+    return true
+  }
+  const maxAgeDays = config.auth.password_max_age_days
+  if (maxAgeDays <= 0) {
+    return false
+  }
+  if (!u.password_changed_at) {
+    return true
+  }
+  const ageMs = Date.now() - new Date(u.password_changed_at).getTime()
+  return ageMs > maxAgeDays * 86_400_000
 }
 
 /**
@@ -487,7 +517,8 @@ async function directoryLogin(
   const token = await issueToken(db, user.id, `session-${ulid()}`, null)
   return {
     identity: { id: user.id, username: user.username, role: user.role },
-    result: { token, user: publicUser(user) },
+    // Directory-managed accounts never carry the local must-change flag.
+    result: { token, user: publicUser(user), must_change: false },
   }
 }
 
@@ -597,7 +628,8 @@ async function authBootstrap(
   const token = await issueToken(db, user.id, 'owner-session', null)
   return {
     identity: { id: user.id, username: user.username, role: user.role },
-    result: { token, user: publicUser(user) },
+    // The owner just set this password live; there is nothing to re-issue.
+    result: { token, user: publicUser(user), must_change: false },
   }
 }
 

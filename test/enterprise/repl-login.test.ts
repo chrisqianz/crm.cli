@@ -10,7 +10,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { bootstrapOwner, freshDb, startServer } from './helpers'
+import { bootstrapOwner, connect, freshDb, startServer } from './helpers'
 
 interface ReplRun {
   code: number
@@ -150,6 +150,42 @@ test('a wrong password fails the wizard without logging in', async () => {
     expect(r.out).toContain('not logged in')
     expect(r.out).not.toContain(`owner@127.0.0.1:${server.port} ✓`)
     expect(r.code).toBe(0) // the REPL survives a failed login
+  } finally {
+    await server.close()
+    cleanup()
+  }
+}, 60_000)
+
+test('a must-change login defers in the REPL and the session continues', async () => {
+  const { dbPath, cleanup } = freshDb()
+  const server = await startServer(dbPath)
+  try {
+    const owner = await bootstrapOwner(server)
+    const admin = await connect(server.port, owner.token)
+    await admin.call('admin.user.create', {
+      username: 'forced',
+      role: 'writer',
+    })
+    const reset = await admin.call<{ temporary_password: string }>(
+      'admin.user.reset-password',
+      { username: 'forced' },
+    )
+    // non-TTY hand-off: the real login command prints its guidance instead
+    // of prompting for the new password; the REPL must survive it and the
+    // session (saved before the deferral) stays live.
+    const r = await repl(
+      ['login', 'forced', reset.temporary_password, 'status', 'q'],
+      {
+        argv: ['--insecure'],
+        extra: { CRM_SERVER: `127.0.0.1:${server.port}` },
+      },
+    )
+    expect(r.err).toContain(
+      'password must be changed — run crm password change',
+    )
+    // the session was saved before the deferral, so status names it
+    expect(r.out).toContain(`forced@127.0.0.1:${server.port} ✓`)
+    expect(r.code).toBe(0)
   } finally {
     await server.close()
     cleanup()
