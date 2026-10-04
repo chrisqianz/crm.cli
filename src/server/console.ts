@@ -180,8 +180,16 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
     <section id="tab-config" class="hidden">
       <div class="card">
         <h2>Server configuration</h2>
-        <p class="sub">Read-only view. Secrets are never returned — only "is it set".</p>
+        <p class="sub">Read-only. Secrets are never returned — only "is it set". Edit the config file on the database host; changes take effect after a restart.</p>
+        <div id="cfgMsg" class="msg" hidden></div>
         <div id="cfgView"><p class="sub">Loading…</p></div>
+        <div id="cfgTOMLBlock" class="hidden" style="margin-top:14px">
+          <label>Effective config (copyable; secrets stripped)</label>
+          <div style="position:relative">
+            <button class="ghost" id="cfgTomlCopy" style="position:absolute;right:8px;top:8px;z-index:1">Copy</button>
+            <pre id="cfgTOML" class="mono" style="max-height:280px;overflow:auto;background:var(--bg);padding:10px;border-radius:6px;font-size:11px"></pre>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -472,12 +480,28 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
   function loadConfig() {
     api("/api/config").then(function (c) {
       var h = "";
-      h += "<h2 style='font-size:13px;margin-bottom:6px'>Serve</h2>" +
-        kv([["rpc host:port", "${meta.rpcHost}:${meta.rpcPort}"]]);
+      // D-B: which file to edit, and that changes need a restart.
+      h += "<p class='mono sub' style='margin-bottom:4px'>config file: " + esc(c.path) +
+        " <span style='margin-left:8px;color:var(--muted)'>changes take effect after a restart</span></p>";
+      h += "<h2 style='font-size:13px;margin:10px 0 6px'>Serve</h2>" +
+        kv([["rpc host:port", "${meta.rpcHost}:${meta.rpcPort}"], ["bind host", c.serve.host]]);
       h += "<h2 style='font-size:13px;margin:14px 0 6px'>Auth</h2>" +
         kv([["default_role", c.auth.default_role], ["lockout", c.auth.lockout_threshold + " in " + c.auth.lockout_minutes + "min"],
             ["min password len", c.auth.password_min_length], ["login rate /ip /min", c.auth.login_rate_per_minute],
             ["login rate /user /min", c.auth.login_user_rate_per_minute]]);
+      h += "<h2 style='font-size:13px;margin:14px 0 6px'>Database</h2>" +
+        kv([["path", c.database && c.database.path ? c.database.path : "—"]]);
+      h += "<h2 style='font-size:13px;margin:14px 0 6px'>Backup (litestream)</h2>";
+      if (c.backup && c.backup.destination) {
+        h += kv([["destination", c.backup.destination]]);
+      } else {
+        h += "<p class='sub'>Not configured — set [backup] destination to enable continuous replication.</p>";
+      }
+      h += "<h2 style='font-size:13px;margin:14px 0 6px'>Activity types</h2>" +
+        kv([["types", (c.activity && c.activity.types ? c.activity.types : []).join(", ")]]);
+      h += "<h2 style='font-size:13px;margin:14px 0 6px'>Pipeline</h2>" +
+        kv([["stages", (c.pipeline && c.pipeline.stages ? c.pipeline.stages : []).join(" → ")],
+            ["won / lost", ((c.pipeline && c.pipeline.won_stage) || "—") + " / " + ((c.pipeline && c.pipeline.lost_stage) || "—")]]);
       h += "<h2 style='font-size:13px;margin:14px 0 6px'>LDAP directory</h2>";
       if (c.ldap.enabled) {
         var roleLines = Object.keys(c.ldap.roles || {}).map(function (g) { return g + " → " + c.ldap.roles[g]; });
@@ -496,8 +520,20 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
         h += "<p class='sub'>Not configured — add [mail] to the server crm.toml to enable crm email send.</p>";
       }
       el("cfgView").innerHTML = h;
+      // D-B: fill the static TOML block (sanitized server-side) and show it.
+      el("cfgTOML").textContent = c.toml || "";
+      el("cfgTOMLBlock").classList.remove("hidden");
     }).catch(function (e) { el("cfgView").innerHTML = "<p class='sub'>" + esc(e.message) + "</p>"; });
   }
+
+  el("cfgTomlCopy").onclick = function () {
+    var t = el("cfgTOML");
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(t.textContent).then(function () {
+        showMsg("cfgMsg", "ok", "Config copied.");
+      }, function () { t.scrollIntoView({ block: "center" }); });
+    }
+  };
 
   // ---- Wire up ----
   function switchTab(name) {

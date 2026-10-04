@@ -253,10 +253,22 @@ async function handleRequest(
 function configView(ctx: Ctx): Record<string, unknown> {
   const c = ctx.config
   return {
+    // D-B: which file the operator actually edits ("" = pure defaults).
+    path: c.config_meta.path || '(defaults)',
+    // D-B: the effective config as copyable TOML, secrets stripped.
+    toml: renderSanitizedToml(c),
     serve: {
       host: c.serve.host,
       rpc_host: ctx.rpcHost,
       rpc_port: ctx.rpcPort,
+    },
+    database: { path: c.database.path },
+    backup: { destination: c.backup.destination },
+    activity: { types: c.activity.types },
+    pipeline: {
+      stages: c.pipeline.stages,
+      won_stage: c.pipeline.won_stage,
+      lost_stage: c.pipeline.lost_stage,
     },
     auth: {
       default_role: c.auth.default_role,
@@ -294,6 +306,107 @@ function configView(ctx: Ctx): Record<string, unknown> {
       password_set: process.env.CRM_SMTP_PASSWORD !== undefined,
     },
   }
+}
+
+/**
+ * The bind-password line for the sanitized TOML: which environment
+ * variable carries it, and whether that variable is actually set on
+ * this host. The value itself never crosses the wire.
+ */
+function ldapBindPasswordNote(ldap: CRMConfig['ldap']): string {
+  if (ldap.bind_password_env === '') {
+    return 'unset'
+  }
+  if (process.env[ldap.bind_password_env] === undefined) {
+    return `${ldap.bind_password_env} (NOT SET)`
+  }
+  return `${ldap.bind_password_env} (set)`
+}
+
+/**
+ * The effective config as TOML, ready to copy into a crm.toml on a
+ * fresh machine. Sanitized by construction: password material never
+ * appears — secrets are environment variables on the DB host, and the
+ * rendered text only reports whether the expected variable is set.
+ */
+function renderSanitizedToml(c: CRMConfig): string {
+  const lines: string[] = [
+    '# Effective crm.cli server configuration (sanitized — no secrets)',
+    '# Changes take effect after a server restart.',
+    '',
+    '[serve]',
+    `host = "${c.serve.host}"`,
+    `port = ${c.serve.port}`,
+  ]
+  if (c.serve.public_host !== '') {
+    lines.push(`public_host = "${c.serve.public_host}"`)
+  }
+  if (c.serve.public_port !== 0) {
+    lines.push(`public_port = ${c.serve.public_port}`)
+  }
+  const tlsNote =
+    c.serve.cert || c.serve.key
+      ? `custom material (${c.serve.cert || c.serve.key})`
+      : 'default self-signed'
+  lines.push(
+    `# TLS: ${tlsNote}`,
+    '',
+    '[database]',
+    `path = "${c.database.path}"`,
+    '',
+    '[auth]',
+    `lockout_threshold = ${c.auth.lockout_threshold}`,
+    `lockout_minutes = ${c.auth.lockout_minutes}`,
+    `password_min_length = ${c.auth.password_min_length}`,
+    `password_max_age_days = ${c.auth.password_max_age_days}`,
+    `default_role = "${c.auth.default_role}"`,
+    `login_rate_per_minute = ${c.auth.login_rate_per_minute}`,
+    `login_user_rate_per_minute = ${c.auth.login_user_rate_per_minute}`,
+    '',
+    '[backup]',
+    `destination = "${c.backup.destination}"`,
+    '',
+    '[activity]',
+    `types = [${c.activity.types.map((t) => `"${t}"`).join(', ')}]`,
+    '',
+    '[pipeline]',
+    `stages = [${c.pipeline.stages.map((s) => `"${s}"`).join(', ')}]`,
+    `won_stage = "${c.pipeline.won_stage}"`,
+    `lost_stage = "${c.pipeline.lost_stage}"`,
+  )
+  if (c.mail.host !== '') {
+    lines.push(
+      '',
+      '[mail]',
+      `host = "${c.mail.host}"`,
+      `port = ${c.mail.port}`,
+      `user = "${c.mail.user}"`,
+      `from = "${c.mail.from}"`,
+      `secure = ${c.mail.secure}`,
+      `# password: env ${
+        process.env.CRM_SMTP_PASSWORD === undefined
+          ? 'CRM_SMTP_PASSWORD (NOT SET)'
+          : 'CRM_SMTP_PASSWORD (set)'
+      }`,
+    )
+  }
+  if (c.ldap.enabled) {
+    lines.push(
+      '',
+      '[ldap]',
+      'enabled = true',
+      `url = "${c.ldap.url}"`,
+      `starttls = ${c.ldap.starttls}`,
+      `base_dn = "${c.ldap.base_dn}"`,
+      `bind_dn = "${c.ldap.bind_dn}"`,
+      `# bind password: env ${ldapBindPasswordNote(c.ldap)}`,
+      `user_filter = "${c.ldap.user_filter}"`,
+      `group_base_dn = "${c.ldap.group_base_dn}"`,
+      `# group→role: ${JSON.stringify(c.ldap.roles)}`,
+      `tls_skip_verify = ${c.ldap.tls_skip_verify}`,
+    )
+  }
+  return `${lines.join('\n')}\n`
 }
 
 /**

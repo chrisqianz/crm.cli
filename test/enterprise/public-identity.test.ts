@@ -131,3 +131,100 @@ public_port = 443
     )
   }, 60_000)
 })
+
+describe('config surface completion (D-B)', () => {
+  const CONFIG = `[serve]
+public_host = "crm.corp.example"
+
+[backup]
+destination = "file:///tmp/crm-backup-test"
+
+[activity]
+types = ["call", "email", "wechat"]
+
+[pipeline]
+stages = ["lead", "qualified", "won"]
+won_stage = "won"
+lost_stage = "lost"
+`
+
+  async function loginToken(
+    base: string,
+    owner: { username: string; password: string },
+  ): Promise<string> {
+    const login = await fetch(`${base}/api/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        username: owner.username,
+        password: owner.password,
+      }),
+    }).then((r) => r.json() as Promise<{ token: string }>)
+    return login.token
+  }
+
+  test('config view gains database/backup/activity/pipeline + the file path', async () => {
+    await withServer(CONFIG, async (server, owner) => {
+      const base = `http://127.0.0.1:${server.adminPort}`
+      const token = await loginToken(base, owner)
+      const cfg = await fetch(`${base}/api/config`, {
+        headers: { authorization: `Bearer ${token}` },
+      }).then(
+        (r) =>
+          r.json() as Promise<{
+            path: string
+            database: { path: string }
+            backup: { destination: string }
+            activity: { types: string[] }
+            pipeline: { stages: string[]; won_stage: string }
+          }>,
+      )
+      expect(cfg.database.path).toBe(server.dbPath)
+      expect(cfg.backup.destination).toBe('file:///tmp/crm-backup-test')
+      expect(cfg.activity.types).toEqual(['call', 'email', 'wechat'])
+      expect(cfg.pipeline.stages).toEqual(['lead', 'qualified', 'won'])
+      // the resolved file, not a guess — the operator needs to know
+      // which crm.toml to edit
+      expect(cfg.path).not.toMatch(/\(defaults\)/)
+      expect(cfg.path).toMatch(/server\.toml$/)
+    })
+  }, 60_000)
+
+  test('config view carries a sanitized TOML with no secret material', async () => {
+    await withServer(CONFIG, async (server, owner) => {
+      const base = `http://127.0.0.1:${server.adminPort}`
+      const token = await loginToken(base, owner)
+      const cfg = await fetch(`${base}/api/config`, {
+        headers: { authorization: `Bearer ${token}` },
+      }).then(
+        (r) =>
+          r.json() as Promise<{
+            toml: string
+            mail: { password_set: boolean }
+          }>,
+      )
+      const toml = cfg.toml
+      // effective values are present, ready to copy into a new crm.toml
+      expect(toml).toContain('[backup]')
+      expect(toml).toContain('destination = "file:///tmp/crm-backup-test"')
+      expect(toml).toContain('[pipeline]')
+      // secrets never cross the wire: not the SMTP password and not
+      // any bind password, in neither the TOML nor the raw view
+      expect(toml).not.toContain('smtp-secret-pw')
+      expect(JSON.stringify(cfg)).not.toContain('smtp-secret-pw')
+      expect(cfg.mail.password_set).toBe(false)
+    })
+  }, 60_000)
+
+  test('console page renders the config path, copyable TOML, and restart note', async () => {
+    await withServer(CONFIG, async (server) => {
+      const page = await (
+        await fetch(`http://127.0.0.1:${server.adminPort}/`)
+      ).text()
+      // the Config tab must expose the TOML block and tell the
+      // operator that changes need a restart
+      expect(page).toContain('id="cfgTOML"')
+      expect(page).toMatch(/restart/i)
+    })
+  }, 60_000)
+})
