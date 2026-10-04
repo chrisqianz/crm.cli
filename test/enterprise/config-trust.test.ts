@@ -211,10 +211,19 @@ stages = ["lead", "closed-won"]
   test('non-serve commands warn about it instead of refusing', async () => {
     const cwd = tempProject(LDAP_BLOCK)
     const { dbPath, cleanup } = freshDb()
+    // A saved ~/.crm/credentials on the host would flip this command to
+    // remote mode and read a different database — isolate HOME so the
+    // test proves the local-mode contract no matter who ran it last.
+    const home = mkdtempSync(join(tmpdir(), 'crm-config-trust-home-'))
     try {
       const proc = Bun.spawn(['bun', 'run', CRM, 'contact', 'list'], {
         cwd,
-        env: { ...process.env, NO_COLOR: '1', CRM_DB: dbPath },
+        env: {
+          ...process.env,
+          NO_COLOR: '1',
+          CRM_DB: dbPath,
+          HOME: home,
+        },
         stdin: 'ignore',
         stdout: 'pipe',
         stderr: 'pipe',
