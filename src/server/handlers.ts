@@ -5,6 +5,7 @@ import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 import type { CRMConfig } from '../config'
+import { resolveBackend } from '../db/open'
 import type { User } from '../db/schema-sqlite'
 import type { CrmDb } from '../db/seam'
 import { auditMeta, auditSnapshot, recordAudit } from '../lib/audit'
@@ -1342,16 +1343,19 @@ export async function serverStatus(
     (await (
       await db.select({ s: sql<number>`max(seq)` }).from(schema.auditLog)
     )[0]?.s) ?? null
-  let dbBytes = 0
+  // A postgres server has no file to size. Zero would be a measurement that
+  // means "empty database", which is a different — and misleading — fact.
+  let dbBytes: number | null = null
   if (config.database.path && existsSync(config.database.path)) {
     try {
       dbBytes = statSync(config.database.path).size
     } catch {
-      dbBytes = 0
+      dbBytes = null
     }
   }
   return {
     server_version: serverVersion(),
+    backend: resolveBackend(config),
     now: new Date().toISOString(),
     uptime_ms: live ? Date.now() - live.startedAt : null,
     connections: live ? live.connections : null,

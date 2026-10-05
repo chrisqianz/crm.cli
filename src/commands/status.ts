@@ -14,9 +14,11 @@ import { NOT_CONNECTED } from '../remote/dispatch'
 
 interface StatusResult {
   audit_seq: number | null
+  backend: string
   backup: { last_sync_at: string | null; in_sync: boolean | null }
   connections: number | null
-  db_bytes: number
+  /** null when the server has no file to size — a postgres-backed server. */
+  db_bytes: number | null
   now: string
   server_version: string
   tokens: number
@@ -92,6 +94,7 @@ export function registerStatusCommands(program: Command): void {
           const s = await client.call<StatusResult>('server.status', {})
           console.log(`server     ${host}:${port}`)
           console.log(`version    ${s.server_version}`)
+          console.log(`database   ${s.backend}`)
           if (s.uptime_ms !== null) {
             console.log(`uptime     ${fmtUptime(s.uptime_ms)}`)
           }
@@ -100,7 +103,9 @@ export function registerStatusCommands(program: Command): void {
           }
           console.log(`users      ${s.users}`)
           console.log(`tokens     ${s.tokens}`)
-          console.log(`db size    ${fmtBytes(s.db_bytes)}`)
+          console.log(
+            `db size    ${s.db_bytes === null ? '— (no local file)' : fmtBytes(s.db_bytes)}`,
+          )
           console.log(`audit seq  ${s.audit_seq ?? '—'}`)
           console.log(`backup     ${backupLine(s)}`)
           if (session?.username) {

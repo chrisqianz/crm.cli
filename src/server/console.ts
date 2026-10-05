@@ -295,11 +295,12 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
       var last = s.backup && s.backup.last_sync_at ? " (last " + s.backup.last_sync_at + ")" : "";
       var cards = [];
       cards.push(dashCard("version", s.server_version || "—"));
+      cards.push(dashCard("database", s.backend || "—"));
       cards.push(dashCard("uptime", s.uptime_ms != null ? Math.round(s.uptime_ms / 1000) + " s" : "—"));
       cards.push(dashCard("connections", s.connections != null ? s.connections : "—"));
       cards.push(dashCard("users", s.users != null ? s.users : "—"));
       cards.push(dashCard("tokens", s.tokens != null ? s.tokens : "—"));
-      cards.push(dashCard("db size", s.db_bytes != null ? Math.round(s.db_bytes / 1048576 * 100) / 100 + " MB" : "—"));
+      cards.push(dashCard("db size", s.db_bytes != null ? Math.round(s.db_bytes / 1048576 * 100) / 100 + " MB" : "— (no local file)"));
       cards.push(dashCard("audit seq", s.audit_seq != null ? s.audit_seq : "—"));
       cards.push(dashCard("backup", sync + last));
       el("dashCards").innerHTML = cards.join("");
@@ -490,7 +491,9 @@ pre{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padd
             ["min password len", c.auth.password_min_length], ["login rate /ip /min", c.auth.login_rate_per_minute],
             ["login rate /user /min", c.auth.login_user_rate_per_minute]]);
       h += "<h2 style='font-size:13px;margin:14px 0 6px'>Database</h2>" +
-        kv([["path", c.database && c.database.path ? c.database.path : "—"]]);
+        kv([["backend", (c.database && c.database.backend) || "sqlite"],
+            ["path", c.database && c.database.path ? c.database.path : "— (postgres backend)"],
+            ["url", c.database && c.database.url_set ? "set (redacted here; it is a credential)" : "NOT SET"]]);
       h += "<h2 style='font-size:13px;margin:14px 0 6px'>Backup (litestream)</h2>";
       if (c.backup && c.backup.destination) {
         h += kv([["destination", c.backup.destination]]);

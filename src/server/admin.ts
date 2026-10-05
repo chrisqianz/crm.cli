@@ -162,6 +162,23 @@ async function handleRequest(
     if (method === 'GET' && path === '/healthz') {
       return sendJson(200, { ok: true, admin: true })
     }
+    // Two probes, two questions, because an orchestrator asks them separately.
+    // `/health` is liveness: it answers while the database is down, so a
+    // thirty-second database outage is waited out instead of being answered
+    // with a restart storm. `/ready` answers the question a load balancer
+    // actually has — can this server serve a client right now — and it proves
+    // it by querying, not by remembering that it once started.
+    if (method === 'GET' && path === '/health') {
+      return sendJson(200, { ok: true })
+    }
+    if (method === 'GET' && path === '/ready') {
+      const backend = resolveBackend(ctx.config)
+      const probe = await probeDatabase(ctx.db)
+      if (!probe.ok) {
+        return sendJson(503, { ready: false, backend, error: probe.error })
+      }
+      return sendJson(200, { ready: true, backend, db: 'ok' })
+    }
     if (method === 'POST' && path === '/api/login') {
       const raw = await readBody(req)
       const body = JSON.parse(raw || '{}') as Record<string, unknown>
@@ -455,6 +472,47 @@ function databaseToml(c: CRMConfig): string[] {
  * console screenshot into a ticket must never be pasting a credential, and
  * "we could not parse it" is not a license to echo the raw string.
  */
+/**
+ * Readiness budget. Same 5 s the backup probe gets: a database that has not
+ * answered by then is not going to answer before the probe's own caller gives
+ * up, and a probe that hangs is indistinguishable from one that succeeded
+ * until the orchestrator kills the process for being unresponsive.
+ */
+const READY_TIMEOUT_MS = 5000
+
+type ReadinessProbe = { ok: true } | { ok: false; error: string }
+
+/**
+ * Ask the configured database one question, through the seam, on a budget.
+ *
+ * `SELECT 1` is deliberately the *only* thing this runs. Every other shape —
+ * counting users, reading a row — is a data-dependent probe that fails for
+ * reasons that say nothing about the database, and a readiness check that
+ * lies in one direction is worse than no readiness check at all.
+ */
+async function probeDatabase(db: CrmDb): Promise<ReadinessProbe> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      db.$crm.raw.query('SELECT 1'),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(new Error(`database probe exceeded ${READY_TIMEOUT_MS}ms`)),
+          READY_TIMEOUT_MS,
+        )
+      }),
+    ])
+    return { ok: true }
+  } catch (error) {
+    return { ok: false, error: (error as Error).message }
+  } finally {
+    if (timer !== undefined) {
+      clearTimeout(timer)
+    }
+  }
+}
+
 export function redactDatabaseUrl(url: string): string {
   try {
     const parsed = new URL(url)

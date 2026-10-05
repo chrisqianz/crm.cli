@@ -285,6 +285,24 @@ describe.skipIf(SKIP_PG)('postgres open path', () => {
     rmSync(scratch, { recursive: true, force: true })
   })
 
+  test('both handles hand out the same schema namespace keys', async () => {
+    // `$crm.schema` is what 96 call sites bind, and they write export names
+    // (`schema.auditLog`), not physical ones (`audit_log`). The pg seam once
+    // carried the physical-name map, so `schema.auditLog` was undefined and
+    // `server.status` died inside drizzle. A static comparison of the two
+    // declaration files cannot catch that — it is a wiring bug, so the
+    // assertion runs against two live handles.
+    const config = await freshDatabase()
+    const pg = await openDatabase(config)
+    const lite = await openDB(join(scratch, `keys-${ulid()}.db`))
+
+    expect(Object.keys(pg.$crm.schema).sort()).toEqual(
+      Object.keys(lite.$crm.schema).sort(),
+    )
+    expect(Object.keys(pg.$crm.schema)).toContain('auditLog')
+    await pg.$crm.raw.query('SELECT 1')
+  })
+
   test('bootstraps every contract table with contract columns', async () => {
     const config = await freshDatabase()
     const db = await openDatabase(config)

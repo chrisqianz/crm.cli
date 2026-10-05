@@ -40,14 +40,23 @@ export interface StartServerOptions {
    * project-config path (see test/enterprise/config-trust.test.ts).
    */
   cwd?: string
+  /**
+   * Serve the postgres database at this url instead of a file. `--db` is a
+   * sqlite-shaped flag, so it is omitted entirely: a file path alongside
+   * `[database] backend = "postgres"` is a config contradiction the server is
+   * right to refuse, and the test would be measuring its own fixture.
+   */
+  databaseUrl?: string
   /** Extra environment for the server process (merged over process.env). */
   env?: Record<string, string>
 }
 
 export async function startServer(
+  /** Server-side sqlite file; pass '' with `databaseUrl` for postgres. */
   dbPath: string,
   opts?: StartServerOptions,
 ): Promise<TestServer> {
+  const databaseUrl = opts?.databaseUrl
   let configPath = opts?.configPath
   if (opts?.configBody !== undefined) {
     configPath = join(
@@ -60,6 +69,7 @@ export async function startServer(
   const env: Record<string, string | undefined> = {
     ...baseEnv,
     NO_COLOR: '1',
+    ...(databaseUrl ? { CRM_DATABASE_URL: databaseUrl } : {}),
     ...(opts?.env ?? {}),
   }
   if (!opts?.cwd) {
@@ -71,7 +81,15 @@ export async function startServer(
   }
   const proc = spawn(
     'bun',
-    ['run', CRM, 'serve', '--port', '0', '--db', dbPath, ...(opts?.args ?? [])],
+    [
+      'run',
+      CRM,
+      'serve',
+      '--port',
+      '0',
+      ...(databaseUrl ? [] : ['--db', dbPath]),
+      ...(opts?.args ?? []),
+    ],
     {
       cwd: opts?.cwd ?? REPO,
       stdio: ['ignore', 'pipe', 'pipe'],

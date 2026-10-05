@@ -172,14 +172,26 @@ full-row JSON; insert = before NULL, delete = after NULL). B4 is
 
 - **`server.status` RPC** — minRole `reader` (liveness/overview, not
   sensitive: no config, no secrets, no host paths):
-  `{ server_version, now, connections, users, tokens, db_bytes,
-  audit_seq, backup: { last_sync_at, in_sync } }`.
+  `{ server_version, backend, now, connections, users, tokens, db_bytes,
+  audit_seq, backup: { last_sync_at, in_sync } }`. `backend` is `"sqlite"`
+  or `"postgres"` — a client that trusts the server must be able to see
+  which database actually answered. `db_bytes` is `null` on postgres: there
+  is no local file to measure, and reporting `0` would read as an empty
+  database.
+- **Console Config tab** shows `backend`, the sqlite `path` (or a marker
+  that postgres has no path), and whether a `url` is set — redacted, since
+  the url carries a password.
 - **CLI `crm status`** — remote mode: formatted key/value view of
   `server.status`. Local mode fails clean per the mode contract
   (`not connected — run 'crm login <server>' …`).
-- **Console Dashboard tab** (first tab): cards for version, users, tokens,
-  audit seq, last backup sync, connections; refresh button + 30 s
+- **Console Dashboard tab** (first tab): cards for version, backend, users,
+  tokens, audit seq, last backup sync, connections; refresh button + 30 s
   auto-refresh; reuses `server.status`.
+- **Probes on the admin port** (AL-1-6): `/health` is liveness — the process
+  answers, the database is not consulted. `/ready` is readiness — a `SELECT
+  1` through the seam with a 5 s budget; failure is 503. They are separate
+  because conflating them turns a 30-second database restart into a restart
+  storm. Both are unauthenticated, like the pre-existing `/healthz`.
 
 ## Out of scope (recorded, not built)
 

@@ -605,6 +605,60 @@ plus `src/server/handlers.ts` where it touches `db.` directly.
 - [ ] Mutation: `/ready` ignores probe failure (always 200); the drop
   test goes red; restore via `cp`.
 
+**As built**
+
+- `src/commands/serve.ts` now opens through `openDatabase(config)` and the
+  AL-1-2 honest guard is gone. Config validation happens *before* anything
+  binds a port (`validateDatabaseConfig` → `die`), because a serve that
+  prints `READY` and then fails its first query is worse than one that
+  refuses to start. `[backup] destination` on postgres is refused outright:
+  litestream replicates a *file*, and silently skipping it would leave an
+  operator believing they had continuous replication. The message names
+  `pg_dump` so the reader knows the refusal is a gap in the plan (AL-8),
+  not a dead end. Shutdown calls `closeDatabase(url)` — an idle pg `Pool`
+  keeps the event loop alive, so without it the process never exits.
+- Plan deviation, forced by the CLI: `serve --db <path>` is a *required*
+  option, and a postgres server has no path. The pg shape is therefore
+  `--db ""` plus `[database] url` / `CRM_DATABASE_URL`. `startServer` grew
+  `{ databaseUrl }`, which injects the env var and omits `--db` so the
+  tests do not paper over that awkwardness.
+- `/health` answers `{ ok: true }` from the process; `/ready` runs one
+  `SELECT 1` through the seam under `Promise.race` with a 5 s budget and
+  returns 503 with the probe error. Both live beside the pre-existing
+  `/healthz`. They are separate endpoints on purpose: a combined probe
+  turns a thirty-second database restart into a restart storm, and a
+  data-shaped readiness check ("can you count the contacts?") fails for
+  reasons that have nothing to do with the connection it claims to test.
+  One-way-lying readiness is worse than no readiness.
+- `server.status` gained `backend`, and `db_bytes` became `number | null`.
+  On postgres there is no local file to `statSync`; reporting `0` would be
+  read as "empty database", which is a lie in the dangerous direction.
+  `crm status` prints `database  postgres` and `— (no local file)`; the
+  console Dashboard gained a backend card and the Config tab renders
+  backend / path / url(set, redacted).
+- **The defect the matrix caught.** `pgHandle` handed drizzle
+  `pgSchema.tables` — keyed by *physical* name — and handed `$crm.schema`
+  the same map, while the sqlite seam spreads the *namespace* and all 96
+  AL-1-5 call sites write the export name. So `schema.auditLog` was
+  `undefined` on postgres and `server.status` died inside drizzle with
+  `undefined is not an object (evaluating 'table[Table.Symbol.IsAlias]')`.
+  `src/db/open.ts` now passes the namespace to the seam and the physical
+  map to drizzle. The static parity test could not see this — both
+  declaration files are aligned; only the wiring was wrong. The regression
+  therefore asserts the key sets of two *live* handles
+  (`both handles hand out the same schema namespace keys`), which is the
+  only shape that can fail for a mis-wired seam.
+- Mutation evidence (backed up with `cp`, never `git checkout`): `/ready`
+  returning 200 regardless of the probe → `goes 503 when the database goes
+  away` red; the litestream refusal disabled → `refuses continuous
+  replication` red; `backend: 'sqlite'` hardcoded in `serverStatus` →
+  `bootstraps an owner over postgres` red. All three restored clean.
+- Gate: `861 pass / 7 fail` (`test/enterprise/postgres-serve.test.ts` 5,
+  plus one handle-parity test in `postgres-open.test.ts`). The 6 email
+  sandbox reds are baseline; the seventh, `logout tears down the live
+  session`, is the load flake already traced to Bun.serve teardown — 3/3
+  green when run on its own.
+
 **Commit:** `serve: postgres backend + /health /ready + console backend display`
 
 ---

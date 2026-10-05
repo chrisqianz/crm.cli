@@ -5,7 +5,7 @@ import type { CRMConfig } from '../config'
 import { openDB } from '../db'
 import { postgresRaw } from './raw-postgres'
 import { type ColumnSpec, TABLES, type TableSpec } from './schema'
-import { tables as pgTables } from './schema-pg'
+import * as pgSchema from './schema-pg'
 import type { CrmDb, CrmSeam } from './seam'
 
 /**
@@ -238,9 +238,13 @@ function pgHandle(pool: Pool): PostgresHandle {
   const seam = {
     dialect: 'postgres',
     raw: postgresRaw(pool),
-    schema: pgTables,
+    // The namespace, NOT `pgSchema.tables`: the tables map is keyed by physical
+    // name (`audit_log`), while every caller of `$crm.schema` writes the export
+    // name (`schema.auditLog`). Keying the two dialects' seams differently made
+    // that column undefined and crashed drizzle inside `server.status`.
+    schema: { ...pgSchema },
   }
-  const builder = drizzlePg(pool, { schema: pgTables })
+  const builder = drizzlePg(pool, { schema: pgSchema.tables })
   // SAFETY: asserted, not derived — `CrmDb`'s verbs are typed against the sqlite
   // table namespace because drizzle binds column types to a dialect module, while
   // this is drizzle's POSTGRES builder over `schema-pg`. Both declarations use the

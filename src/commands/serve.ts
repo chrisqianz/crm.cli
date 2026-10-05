@@ -1,8 +1,12 @@
 import type { Command } from 'commander'
 
 import { loadConfig, projectAuthConfigWarning } from '../config'
-import { openDB } from '../db'
-import { resolveBackend } from '../db/open'
+import {
+  closeDatabase,
+  openDatabase,
+  resolveBackend,
+  validateDatabaseConfig,
+} from '../db/open'
 import { die, gConfig, gDb } from '../lib/helpers'
 import { ldapWarnings, validateLdapConfig } from '../lib/ldap'
 import {
@@ -15,7 +19,7 @@ import {
 } from '../lib/litestream'
 import { generateBootstrapCode } from '../lib/secrets'
 import { NEEDS_DB } from '../remote/dispatch'
-import { startAdminServer } from '../server/admin'
+import { redactDatabaseUrl, startAdminServer } from '../server/admin'
 import { startServer } from '../server/serve'
 
 // `crm serve` — the enterprise server (spec/enterprise.md, P1).
@@ -48,21 +52,21 @@ export function registerServeCommand(program: Command): void {
         adminHost?: string
       }) => {
         const config = loadConfig({ configPath: gConfig, dbPath: gDb })
-        // The query layer is still sqlite-anchored (every service builder is),
-        // so a postgres config here would either crash deep in a driver or
-        // quietly serve a file while the operator believes otherwise. Name the
-        // limit instead. This guard comes off when serve runs on postgres.
-        if (resolveBackend(config) === 'postgres') {
-          die(
-            'Error: serve on postgres is not wired in this build — set ' +
-              '[database] backend = "sqlite", or leave backend unset.',
-          )
-        }
+        const backend = resolveBackend(config)
         // A server hosts one named database, and nothing names it for you
         // any more: an operator who forgot --db/CRM_DB gets the fixed
         // message instead of a database silently created under $HOME.
-        if (!config.database.path) {
+        // Postgres is named by url, so this check is sqlite-shaped.
+        if (backend === 'sqlite' && !config.database.path) {
           die(NEEDS_DB)
+        }
+        // The database section is judged before a listener exists: a postgres
+        // config with no url, or a typo'd backend, is refused with the words
+        // that say what to type (openDatabase returns the same message as an
+        // async rejection — printing it here is what makes it readable).
+        const databaseErr = validateDatabaseConfig(config)
+        if (databaseErr) {
+          die(`Error: ${databaseErr}`)
         }
         // A project-discovered config that tried to define login
         // authority was stripped (loadConfig warns). Here that is fatal:
@@ -84,7 +88,7 @@ export function registerServeCommand(program: Command): void {
         for (const warning of ldapWarnings(config)) {
           console.error(`Warning: ${warning}`)
         }
-        const db = await openDB(config.database.path)
+        const db = await openDatabase(config)
         const schema = db.$crm.schema
         const users = await db
           .select({ id: schema.users.id })
@@ -101,7 +105,18 @@ export function registerServeCommand(program: Command): void {
         // is configured. The daemon is a child of this process — it dies
         // with the server and is written from the same config.
         let replica: { close: () => void } | null = null
-        if (config.backup.destination) {
+        // litestream replicates a FILE. A postgres server is not writing that
+        // file, so a destination here would be a backup of a database nobody
+        // is using — worse than no backup, because it reports success.
+        // Postgres backups are pg_dump-shaped and arrive in AL-8.
+        if (backend === 'postgres' && config.backup.destination) {
+          die(
+            'Error: [backup] destination runs litestream, which replicates a ' +
+              'sqlite file; a postgres server needs pg_dump instead. Remove ' +
+              '[backup] destination (or its destination) on this backend.',
+          )
+        }
+        if (config.backup.destination && config.database.path) {
           try {
             const dest = parseDestination(config.backup.destination)
             const configPath = configPathFor(config.database.path)
@@ -139,15 +154,24 @@ export function registerServeCommand(program: Command): void {
               host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host
             const rpcHost = config.serve.public_host || bindHost
             const rpcPort = config.serve.public_port || addr.port
+            // Say which server holds the data, not which file was opened: on
+            // postgres there is no file, and a path in this line would be a
+            // lie the operator would later debug against.
+            const dbLabel =
+              backend === 'postgres'
+                ? `postgres ${redactDatabaseUrl(config.database.url ?? '')}`
+                : `DB: ${config.database.path}`
             console.log(
-              `crm serve listening on ${host === '0.0.0.0' || host === '::' ? '0.0.0.0' : host}:${addr.port} (DB: ${config.database.path})`,
+              `crm serve listening on ${host === '0.0.0.0' || host === '::' ? '0.0.0.0' : host}:${addr.port} (${dbLabel})`,
             )
             // Nothing discovers this server: a client has to be told the
             // address, and the host's own commands need the database named
             // (spec/client-repl.md A1/A2). Say both while we have a TTY.
             console.log(`clients: crm login ${rpcHost}:${rpcPort}`)
             console.log(
-              `this host: [database] path = "${config.database.path}" in crm.toml, or pass --db`,
+              backend === 'postgres'
+                ? 'this host: [database] backend = "postgres" and url = "…" in crm.toml, or set CRM_DATABASE_URL'
+                : `this host: [database] path = "${config.database.path}" in crm.toml, or pass --db`,
             )
             if (opts.adminPort !== undefined) {
               // Default certs are self-signed → clients need cert-skip.
@@ -177,6 +201,11 @@ export function registerServeCommand(program: Command): void {
             server.close(() => process.exit(0))
             if (admin) {
               admin.server.close()
+            }
+            // A pg Pool holds the event loop open on its own; the exit timer
+            // below would mask it, so release it explicitly.
+            if (backend === 'postgres' && config.database.url) {
+              closeDatabase(config.database.url).catch(() => undefined)
             }
             setTimeout(() => process.exit(0), 3000).unref()
           }
