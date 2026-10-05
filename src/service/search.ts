@@ -6,7 +6,7 @@ import { eq, sql } from 'drizzle-orm'
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { rebuildSearchIndex } from '../db'
-import * as schema from '../drizzle-schema'
+import * as schema from '../db/schema-sqlite'
 import { activityToRow, companyToRow, contactToRow, dealToRow } from '../format'
 
 interface FTSRow {

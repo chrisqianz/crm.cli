@@ -27,7 +27,7 @@ import { ulid } from 'ulid'
 
 import { type CRMConfig, loadConfig } from './config'
 import { type DB, openDB, removeSearchIndex } from './db'
-import * as schema from './drizzle-schema'
+import * as schema from './db/schema-sqlite'
 import { safeJSON } from './format'
 import {
   buildActivityJSON,

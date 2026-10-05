@@ -2,7 +2,7 @@ import { eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
 import type { DB } from './db'
-import * as schema from './drizzle-schema'
+import * as schema from './db/schema-sqlite'
 import { dealToRow } from './format'
 
 export function computePipeline(

@@ -6,7 +6,7 @@ import { and, desc, eq, gt, like } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
-import * as schema from '../drizzle-schema'
+import * as schema from '../db/schema-sqlite'
 import { verifyChain } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 

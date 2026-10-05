@@ -1,13 +1,43 @@
-import type { InferSelectModel } from 'drizzle-orm'
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core'
+import { integer, pgTable, text } from 'drizzle-orm/pg-core'
 
-export const contacts = sqliteTable('contacts', {
+import * as contract from './schema'
+
+/**
+ * Schema version, single source in ./schema (same constant the sqlite
+ * dialect re-exports).
+ */
+export const schemaVersion = contract.schemaVersion
+
+/**
+ * AL-1 PostgreSQL dialect of the physical schema
+ * (spec/alignment.md §3).
+ *
+ * Declared separately from `schema-sqlite.ts` because drizzle's
+ * builder types are dialect-bound — a generic table builder does not
+ * preserve concrete column types, and a
+ * `LibsqlDB | NodePgDatabase` union does not type-check either
+ * (both spike-verified). `test/enterprise/schema-parity.test.ts`
+ * locks the two declarations to the contract in `./schema` so the
+ * physical schemas cannot drift.
+ *
+ * Type notes:
+ * - JSON array columns are TEXT here too — the service layer
+ *   round-trips them as strings; JSONB arrives with AL-6.
+ * - `must_change_password` stays INTEGER on purpose: the service
+ *   layer does 0/1 integer round-trips, a pg BOOLEAN would change
+ *   the wire/JSON shape (true vs 1) and break the byte-identical
+ *   regression.
+ */
+
+export const contacts = pgTable('contacts', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   emails: text('emails').notNull().default('[]'),
   phones: text('phones').notNull().default('[]'),
   addresses: text('addresses').notNull().default('[]'),
   companies: text('companies').notNull().default('[]'),
+  // Social handles are unique via PARTIAL indexes (WHERE col IS NOT
+  // NULL) — created by the pg DDL in AL-1-2, mirroring SCHEMA_SQL.
   linkedin: text('linkedin'),
   x: text('x'),
   bluesky: text('bluesky'),
@@ -18,14 +48,11 @@ export const contacts = sqliteTable('contacts', {
   custom_fields: text('custom_fields').notNull().default('{}'),
   created_at: text('created_at').notNull(),
   updated_at: text('updated_at').notNull(),
-  // P3: optimistic concurrency — bump on every write; CAS compares it.
   version: integer('version').notNull().default(1),
-  // P3: actor threading — which server user last touched this row (null
-  // in local single-user mode).
   updated_by: text('updated_by'),
 })
 
-export const companies = sqliteTable('companies', {
+export const companies = pgTable('companies', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   websites: text('websites').notNull().default('[]'),
@@ -38,7 +65,7 @@ export const companies = sqliteTable('companies', {
   updated_by: text('updated_by'),
 })
 
-export const deals = sqliteTable('deals', {
+export const deals = pgTable('deals', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
   value: integer('value'),
@@ -57,11 +84,7 @@ export const deals = sqliteTable('deals', {
   updated_by: text('updated_by'),
 })
 
-/**
- * Follow-up tasks (P9): lightweight to-dos that link to a contact and/or
- * deal so "what do I do about Acme today" is answerable from one table.
- */
-export const tasks = sqliteTable('tasks', {
+export const tasks = pgTable('tasks', {
   id: text('id').primaryKey(),
   title: text('title').notNull(),
   /** ISO timestamp or null (no deadline). */
@@ -78,7 +101,7 @@ export const tasks = sqliteTable('tasks', {
   updated_by: text('updated_by'),
 })
 
-export const activities = sqliteTable('activities', {
+export const activities = pgTable('activities', {
   id: text('id').primaryKey(),
   type: text('type').notNull(),
   body: text('body').notNull().default(''),
@@ -89,9 +112,7 @@ export const activities = sqliteTable('activities', {
   created_at: text('created_at').notNull(),
 })
 
-// ── Enterprise (spec/enterprise.md P1) ──
-
-export const users = sqliteTable('users', {
+export const users = pgTable('users', {
   id: text('id').primaryKey(),
   username: text('username').notNull().unique(),
   display_name: text('display_name'),
@@ -108,7 +129,7 @@ export const users = sqliteTable('users', {
   password_changed_at: text('password_changed_at'),
 })
 
-export const tokens = sqliteTable('tokens', {
+export const tokens = pgTable('tokens', {
   id: text('id').primaryKey(),
   user_id: text('user_id')
     .notNull()
@@ -121,8 +142,8 @@ export const tokens = sqliteTable('tokens', {
   last_used_at: text('last_used_at'),
 })
 
-export const auditLog = sqliteTable('audit_log', {
-  seq: integer('seq').primaryKey({ autoIncrement: true }),
+export const auditLog = pgTable('audit_log', {
+  seq: integer('seq').primaryKey().generatedAlwaysAsIdentity(),
   at: text('at').notNull(),
   actor_id: text('actor_id').notNull(),
   actor_name: text('actor_name').notNull(),
@@ -137,12 +158,14 @@ export const auditLog = sqliteTable('audit_log', {
   row_hash: text('row_hash').notNull().default(''),
 })
 
-export type AuditRow = InferSelectModel<typeof auditLog>
-export type User = InferSelectModel<typeof users>
-export type ServiceToken = InferSelectModel<typeof tokens>
-
-export type Contact = InferSelectModel<typeof contacts>
-export type Company = InferSelectModel<typeof companies>
-export type Deal = InferSelectModel<typeof deals>
-export type Activity = InferSelectModel<typeof activities>
-export type Task = InferSelectModel<typeof tasks>
+/** All tables keyed by PHYSICAL table name (mirrors schema-sqlite.ts). */
+export const tables = {
+  contacts,
+  companies,
+  deals,
+  tasks,
+  activities,
+  users,
+  tokens,
+  audit_log: auditLog,
+}

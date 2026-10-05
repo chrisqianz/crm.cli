@@ -2,7 +2,7 @@ import type { Command } from 'commander'
 
 import { loadConfig, projectAuthConfigWarning } from '../config'
 import { openDB } from '../db'
-import * as schema from '../drizzle-schema'
+import * as schema from '../db/schema-sqlite'
 import { die, gConfig, gDb } from '../lib/helpers'
 import { ldapWarnings, validateLdapConfig } from '../lib/ldap'
 import {

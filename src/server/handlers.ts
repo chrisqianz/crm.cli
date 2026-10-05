@@ -6,8 +6,8 @@ import { ulid } from 'ulid'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
-import type { User } from '../drizzle-schema'
-import * as schema from '../drizzle-schema'
+import type { User } from '../db/schema-sqlite'
+import * as schema from '../db/schema-sqlite'
 import { auditMeta, auditSnapshot, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import {

@@ -1,5 +1,5 @@
 import type { CRMConfig } from './config'
-import type { Activity, Company, Contact, Deal, Task } from './drizzle-schema'
+import type { Activity, Company, Contact, Deal, Task } from './db/schema-sqlite'
 import { formatPhone } from './normalize.ts'
 
 export function formatOutput(

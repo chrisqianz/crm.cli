@@ -2,8 +2,8 @@ import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
 import type { DB } from './db'
-import type { Activity, Company, Contact, Deal } from './drizzle-schema'
-import * as schema from './drizzle-schema'
+import type { Activity, Company, Contact, Deal } from './db/schema-sqlite'
+import * as schema from './db/schema-sqlite'
 import { safeJSON } from './format'
 
 export const LLM_TXT = `# CRM Filesystem

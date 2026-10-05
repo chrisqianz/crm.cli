@@ -8,8 +8,8 @@ import { eq, sql } from 'drizzle-orm'
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { upsertSearchIndex } from '../db'
-import type { Contact } from '../drizzle-schema'
-import * as schema from '../drizzle-schema'
+import type { Contact } from '../db/schema-sqlite'
+import * as schema from '../db/schema-sqlite'
 import {
   activityToRow,
   companyToRow,

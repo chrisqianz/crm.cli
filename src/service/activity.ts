@@ -5,7 +5,7 @@
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import { upsertSearchIndex } from '../db'
-import * as schema from '../drizzle-schema'
+import * as schema from '../db/schema-sqlite'
 import { activityToRow } from '../format'
 import { runHook } from '../hooks'
 import { ServiceError } from '../lib/errors'

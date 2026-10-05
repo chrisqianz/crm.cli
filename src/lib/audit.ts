@@ -18,7 +18,7 @@ import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
-import * as entitySchema from '../drizzle-schema'
+import * as entitySchema from '../db/schema-sqlite'
 import { resolveEntity, resolveTask } from '../resolve'
 
 /** Genesis prev_hash for the first chained row of a table. */

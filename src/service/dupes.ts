@@ -3,8 +3,8 @@
  */
 
 import type { DB } from '../db'
-import type { Company, Contact } from '../drizzle-schema'
-import * as schema from '../drizzle-schema'
+import type { Company, Contact } from '../db/schema-sqlite'
+import * as schema from '../db/schema-sqlite'
 import { companyToRow, contactToRow, safeJSON } from '../format'
 import { diceCoefficient, levenshtein } from '../lib/helpers'
 

@@ -2,8 +2,8 @@ import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
 import type { DB } from './db'
-import type { Company, Contact, Deal, Task } from './drizzle-schema'
-import * as schema from './drizzle-schema'
+import type { Company, Contact, Deal, Task } from './db/schema-sqlite'
+import * as schema from './db/schema-sqlite'
 import { safeJSON } from './format.ts'
 import { ServiceError } from './lib/errors'
 import {

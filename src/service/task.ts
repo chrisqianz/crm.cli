@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
-import * as schema from '../drizzle-schema'
+import * as schema from '../db/schema-sqlite'
 import { taskToRow } from '../format'
 import { ServiceError } from '../lib/errors'
 import { confirmOrThrow, makeId, now } from '../lib/helpers'
