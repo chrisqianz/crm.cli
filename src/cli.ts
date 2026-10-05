@@ -21,6 +21,7 @@ import { registerEmailCommands } from './commands/email'
 import { registerFuseCommands } from './commands/fuse'
 import { registerImportExportCommands } from './commands/importexport'
 import { registerLoginCommands } from './commands/login'
+import { registerMigrateCommand } from './commands/migrate'
 import { registerPasswordCommands } from './commands/password'
 import { registerReportCommands } from './commands/report'
 import { registerSearchCommands } from './commands/search'
@@ -71,6 +72,7 @@ export function buildProgram(): Command {
   registerSearchCommands(program)
   registerReportCommands(program)
   registerImportExportCommands(program)
+  registerMigrateCommand(program)
   registerDupesCommand(program)
   registerEmailCommands(program)
   registerTaskCommands(program)
