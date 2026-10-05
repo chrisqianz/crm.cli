@@ -501,6 +501,69 @@ plus `src/server/handlers.ts` where it touches `db.` directly.
 - [ ] Confirm zero `db.all`/`db.run`/`schema.` leftovers in
   `src/service/` (rg grep clean, except `db.$crm.raw`).
 
+**As built** (`7c497bd`, 27 files, +458/−208; parent `a6faaa6`):
+
+- **Rename replaced by a local binding.** The plan's `schema.X` → `s.X`
+  rewrite was dropped: every function that touches `schema.` now starts
+  with `const schema = db.$crm.schema`, so all 236 query expressions are
+  byte-identical. That keeps the diff reviewable and turns
+  `bun run check-types` into the mechanical proof — a missing binding is
+  `Cannot find name 'schema'`, not a silent pg failure. 96 bindings were
+  inserted (65 + 31 in two scripted waves, the rest by hand). Entry
+  points widened `db: DB` → `db: CrmDb`; `grep -rn "db: DB\b" src/` is
+  now empty.
+- **Escape hatches made compile errors (tighter than plan).**
+  `CrmQueryBuilder` is a `Pick` of the drizzle sqlite handle exposing
+  `select|insert|update|delete` only — `db.run`, `db.all`, `db.get` and
+  sqlite-only `onConflictDoUpdate` are deliberately *not* on `CrmDb`, so
+  a dialect leak fails typecheck instead of crashing at runtime on pg.
+  Result: zero `db.run`/`db.all`/`db.get` and zero textual
+  `onConflictDoUpdate` anywhere in `src/` (the two grep hits are the
+  comments in `src/db/seam.ts:65` / `src/db/open.ts:234` that document
+  the omission). Namespace schema imports survive only inside the db
+  layer (`src/db.ts:9` needs a real sqlite handle for `migrateSchema` /
+  `ensureUsernameIndex`, plus `src/db/{schema,schema-sqlite,schema-pg,
+  raw-sqlite}.ts`).
+- **New narrow reader contract.** `export interface CrmRawDb { $crm:
+  Pick<CrmSeam, 'raw'> }` for code that only reads: `verifyChain(db:
+  CrmRawDb)` (`src/lib/audit.ts:208`) and
+  `const replica: CrmRawDb = { $crm: sqliteSeam(restored) }`
+  (`src/service/backup.ts:293`). Decision: narrow the reader contract
+  rather than hand the backup path a fake builder handle.
+- **pg finally gets a builder.** `src/db/open.ts` wires drizzle's own
+  `drizzle-orm/node-postgres` (no new dependency): `interface
+  PostgresHandle extends CrmDb { readonly pool: Pool }` +
+  `pgHandle(pool)`. A `// SAFETY:` line comment must sit directly above
+  the cast — the pi-lens rule ignores a doc comment above the enclosing
+  function.
+- **Params are positional `?`,** not the named params this task sketch
+  assumed (node-pg 8.23.1 rejects named placeholders; see AL-1-2).
+- **Wider file set than the plan listed:** `src/fuse-daemon.ts` (16
+  bindings — the single biggest consumer), `src/fuse-json.ts`,
+  `src/export-fs.ts`, `src/reports.ts`, `src/resolve.ts`,
+  `src/lib/{audit,helpers}.ts`, `src/remote/dispatch.ts:411`,
+  `src/server/{admin,serve,handlers}.ts`, `src/commands/serve.ts`,
+  `src/service/{email,registry,backup,...}.ts`. `src/lib/audit.ts` is
+  manual because its namespace is `entitySchema`, not `schema`.
+- **Verification:** `bun run check-types` 0 errors; `bun run lint` clean;
+  full `bun test` back at the 856 pass / 6 fail baseline (6 =
+  `test/email.test.ts` sandbox). Mutation pass, all three plan sites,
+  via `cp` backup + restore (never `git checkout`): owner filter
+  `src/service/contact.ts:220` (`===`→`!==`) ⇒
+  `test/enterprise/ownership.test.ts` 1 pass/1 fail, restored 2/0;
+  `taskDone` write `src/service/task.ts:220` (`'done'`→`'open'`) ⇒
+  `test/tasks.test.ts` 7 pass/2 fail, restored 9/0; `dealMove` bump
+  `src/service/deal.ts:481` (`+ 1` removed) ⇒ `test/cas.test.ts` 8
+  pass/1 fail (`deal move enforces the same CAS contract`), restored
+  9/0. Both files verified back to 0 modified rows.
+- **Unrelated defect found and fixed separately** in `f07295e`: the
+  runner pins itself to UTC while spawned CLIs fall back to the OS zone,
+  so date fixtures disagreed by a calendar day after a local midnight.
+- **Tooling lesson:** `ctx_execute`'s timeout is in **milliseconds**. A
+  mutation batch passed `900` meaning seconds died mid-run and left
+  `src/service/task.ts` mutated; the `cp` backup is what saved the tree.
+  Keep mutation runs under `bash` (seconds) or state ms explicitly.
+
 **Commit:** `service: dialect-neutral layer over CrmDb seam (SQLite regression clean)`
 
 ---
