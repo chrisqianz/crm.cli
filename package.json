@@ -41,6 +41,7 @@
     "ldapts": "^9.2.0",
     "libphonenumber-js": "^1.12.0",
     "normalize-url": "^9.0.0",
+    "pg": "^8.23.1",
     "toml": "^3.0.0",
     "ulid": "^2.3.0"
   },

@@ -60,8 +60,12 @@ Design notes:
   two implementations (Postgres primary, SQLite for dev/offline) over one
   schema source of truth, kept in lockstep by a CI parity check. Tests
   run against Postgres as the primary matrix.
-- **JSON array columns** stay JSONB on Postgres during the driver switch;
-  relationalization is a later feature phase (AL-6), not a driver blocker.
+- **JSON array columns stay `TEXT` on BOTH dialects in AL-1** — the
+  service layer round-trips them as strings (`JSON.stringify` on write,
+  `safeJSON`/`JSON.parse` on read; spike-verified that JSONB readback
+  hands back parsed objects and would break `safeJSON`). JSONB +
+  relationalization are AL-6 work, where they belong with the schema
+  evolution they require.
 - **Search**: FTS5 → PostgreSQL `tsvector` + GIN, same service contract.
 - **No Redis in v1** — Postgres-backed job queue, worker loop inside
   `serve`. Redis + separate worker process arrive with scale (AL-8).
@@ -80,9 +84,54 @@ gate (Postgres primary matrix).
 ### AL-1 — Central PostgreSQL (foundation + core feature)
 
 `crm serve` runs the platform on PostgreSQL 16: repository layer, pg
-schema + drizzle migrations, schema-parity CI check, FTS port,
-`[serve] database` config, docker compose stack, `/health` + `/ready`,
-`crm migrate export` + import path.
+schema + migrations, schema-parity check, FTS port, `[serve] database`
+config, docker compose stack, `/health` + `/ready`, `crm migrate export`
++ import path.
+
+**Seam design (spike-verified 2026-10-06, real `postgres:16`)**:
+
+- Drizzle's SQLite and Postgres instance types are **method-level
+  incompatible** — `db.select/insert/update/delete` on a
+  `LibsqlDB | NodePgDatabase` union does not type-check (tsc spike
+  confirmed). So the seam is a **typed repository interface**, not a
+  union DB handle.
+- **Dual schema, single generic implementation**: the drizzle tables are
+  declared per dialect (same names/columns/nullability/defaults;
+  `sqliteTable` vs `pgTable`) and the service layer takes the schema as a
+  parameter (drizzle "parameterized schema" pattern). The spike verified
+  this compiles across both dialects, so the ~133 in-service drizzle call
+  sites (~18 files) keep their current shape — no repository rewrite is
+  required for AL-1. The type seam is a structural `CrmDb` interface
+  (`select/insert/update/delete` + raw ops) that both real instances
+  satisfy; the rejected alternative was a `LibsqlDB | NodePgDatabase`
+  union (tsc: builder methods are per-dialect incompatible).
+- **Raw SQL is dialected at the seam**: a `RawDB` wrapper
+  (`rawQuery(sql, args)`, `withTransaction(fn)`) with libsql and pg
+  implementations, exposing rows as plain objects. This is the only home
+  for dialect-specific SQL: FTS (FTS5 `MATCH` vs Postgres FTS
+  `to_tsquery`/`plainto_tsquery` + `ts_rank`, GIN index), the audit
+  hash-chain transaction, and the backup raw client escape hatch
+  (`src/service/backup.ts:288`/`:326`).
+- **Migrations**: drizzle-kit `migrations/` (pg) + a SQLite parity
+  script; a CI check asserts both schemas define identical
+  table/column sets (names, nullability, defaults).
+- **Search port**: Postgres table `search_index(entity_type, entity_id,
+  content tsvector generated)`; the existing `findSemantic` JS scoring
+  stays dialect-free; `searchFts` gets the `rawQuery` FTS path per
+  dialect with the same LIKE fallback.
+- **Config**: `[serve] database = "sqlite"` (default, existing behavior
+  byte-identical) or `database = "postgres"` with `database_url`.
+- **Health**: `/health` (process alive) and `/ready` (configured DB
+  reachable) on the admin port.
+- **Migration path**: `crm migrate export` reads the SQLite file and
+  emits the JSON the existing import RPC consumes, so a standalone
+  installation hands its data to a central deployment.
+- **Test matrix**: full enterprise suite green against real
+  `postgres:16` (docker, available on the dev host) and green against
+  SQLite (regression, byte-identical for single-file mode).
+- **Deploy**: docker compose (`crm-serve` + `postgres` + optional
+  `mailpit`); Dockerfile gains a Postgres entrypoint variant; the
+  systemd+SQLite single-machine path stays.
 
 **Acceptance**: the full enterprise test suite green against a real
 `postgres:16` container; `crm serve --db` single-file mode still works
@@ -165,13 +214,16 @@ retention policy (§74).
 1. **No OIDC / OAuth2-PKCE** — D2.
 2. **No Redis in v1** — Postgres job queue, in-process worker; single
    process until AL-8 needs more.
-3. **JSONB before relational tables** — driver switch first (AL-1),
-   schema evolution after (AL-6).
+3. **TEXT, not JSONB, for JSON array columns in AL-1** — the service
+   layer's string round-trip requires it; JSONB arrives with the AL-6
+   relational migration that needs it.
 4. **No refresh-token rotation** — hashed long-lived tokens with expiry,
    naming, scoping, revocation.
 5. **PostgreSQL, not SQL Server** — see D1.
 6. **Console precedes full Web CRM** — the shipped admin console is the
    web admin surface until AL-4.
+7. **TEXT, not JSONB, for JSON array columns in AL-1** — see §3 (read
+   path compat).
 
 ## 6. Open items
 
