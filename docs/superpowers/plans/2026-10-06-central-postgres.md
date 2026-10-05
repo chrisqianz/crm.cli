@@ -310,6 +310,64 @@ default) so both dialects get **identical** physical columns
   params); the tamper/verify test must catch it (hash mismatch or
   broken chain); restore via `cp`.
 
+**As built (delivered 2026-10-06, 8 focused tests green — 6 postgres /
+2 sqlite regression guard):**
+
+Three deviations from the text above, each deliberate:
+
+- **Parameters are positional `?`, not named `@x`.** node-pg 8.23.1
+  rejects named parameters outright (`Query values must be an array`),
+  so the seam contract is `query(sql, args?: unknown[])` and the pg
+  wrapper rewrites `?` → `$n` while skipping string-literal bodies. The
+  audit SQL is still written exactly once.
+- **`auditMeta` / `auditSnapshot` / `auditEntityRow` were not ported.**
+  They still take `DB` and go through the drizzle builder, because the
+  postgres path cannot reach them until AL-1-5 redirects the builder
+  call sites — and drizzle maps JSON/timestamp columns, so a raw
+  `SELECT *` there would change the shape of the snapshot JSON already
+  persisted in `before_json` / `after_json`.
+- **`src/service/backup.ts` lost its fake `DB`.** `backupCheck` used to
+  open a litestream replica and hand `verifyChain` a
+  `{ $client: client } as unknown as DB`; once the chain read through
+  `$crm.raw` that handle died with
+  `TypeError: undefined is not an object (evaluating 'db.$crm.raw')`
+  at `src/lib/audit.ts:209:25`. It now builds a **real** seam, so the
+  replica is verified by the identical code path a live database uses —
+  the `$client` escape hatch AL-1-2 named for retirement is gone.
+
+Other as-built facts:
+
+- `sqliteSeam(client): CrmSeam` is exported from `src/db/raw-sqlite.ts`
+  and shared by `src/db.ts` and `src/service/backup.ts`. `backupCheck`
+  deliberately does not use `openDB`: that memoizes one handle per path,
+  every check restores a fresh temp file, and a long-lived `serve` would
+  leak a client per run.
+- Row coercion is a single `text(value: unknown): string | null`, and it
+  is load-bearing rather than cosmetic: the hash is computed over
+  strings, node-pg returns `BIGINT` as a string but `INTEGER` identity
+  as a number, and the AL-1-1 contract pins `audit_log.seq` to INTEGER
+  precisely so `Number(r.seq)` stays exact. Same trap on the count side
+  — `COUNT(*)` is a string on postgres, so `rawCounts` normalizes with
+  `Number` before anything compares.
+- The three failure messages, the legacy (`row_hash = ''`) skip, the
+  genesis check and the recompute rule are byte-identical to the sqlite
+  version. That is the point: a P4-era chain must verify unchanged after
+  `crm migrate export` replays it into postgres.
+- `auditWriteChain` (the WeakMap per-handle serialization) stays, and is
+  *more* critical on postgres — two concurrent transactions reading the
+  same head fork the chain silently, where sqlite at least returns
+  SQLITE_BUSY.
+- Table names for the count comparison are a closed allowlist of literal
+  queries (`COUNT_QUERIES`), not interpolated identifiers: table names
+  cannot bind as parameters, and ultracite's SQL rules reject any `${}`
+  inside SQL even behind a regex guard.
+- Mutation check: numbering the `?` → `$n` translation in reverse turned
+  the postgres half red (2 pass / 6 fail — a `code 23502` not-null
+  violation and `TypeError: undefined is not an object (evaluating
+  'ins[0].seq')` at `src/lib/audit.ts:166:28`) while both sqlite guards
+  stayed green, which is exactly the discrimination wanted. Restored via
+  `cp`.
+
 **Commit:** `audit: dialect-neutral hash chain over RawDB seam`
 
 ---

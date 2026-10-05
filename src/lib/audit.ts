@@ -13,12 +13,12 @@
 import { createHash } from 'node:crypto'
 import { userInfo } from 'node:os'
 
-import type { Row, Value } from '@libsql/client'
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
 import * as entitySchema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { resolveEntity, resolveTask } from '../resolve'
 
 /** Genesis prev_hash for the first chained row of a table. */
@@ -74,30 +74,17 @@ export function computeRowHash(row: AuditRowValues): string {
 }
 
 /**
- * Row access across libsql surface differences: a plain object row
- * (local file transactions) or a libsql Row with .get()/index access.
+ * Normalize one cell read through the raw seam.
+ *
+ * This is the load-bearing dialect boundary for the chain: a hash is only
+ * reproducible over strings, and the two drivers disagree about the same
+ * column (postgres hands back a `string` for a BIGINT but a `number` for an
+ * INTEGER identity — the schema contract pins `seq` to INTEGER precisely so
+ * `Number()` here stays exact). Everything nullable collapses to null, which
+ * `computeRowHash` already renders as ''.
  */
-/**
- * Read a cell by name, then legacy `.get(index)`, then position. The
- * pinned libsql driver exposes `Row` (name + numeric index access);
- * older drivers exposed `.get(index)` — the legacy branch is a
- * compatibility belt, not the normal path.
- */
-function rowValue(row: Row, key: string, index: number): Value {
-  const named = row[key]
-  if (named !== undefined) {
-    return named
-  }
-  // SAFETY: legacy row objects (pre-positional-row drivers) carry a
-  // `.get(index)` method that the current Row type does not declare;
-  // the narrow cast only names that optional method.
-  const legacy = row as unknown as { get?: (i: number) => Value }
-  if (typeof legacy.get === 'function') {
-    return legacy.get(index)
-  }
-  // SAFETY: Row's numeric index signature is libsql's positional cell
-  // access itself — reading by position needs no cast.
-  return row[index]
+function text(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value)
 }
 
 /**
@@ -115,7 +102,7 @@ function rowValue(row: Row, key: string, index: number): Value {
  */
 const auditWriteChain = new WeakMap<object, Promise<void>>()
 
-export function recordAudit(db: DB, e: AuditEvent): Promise<void> {
+export function recordAudit(db: CrmDb, e: AuditEvent): Promise<void> {
   const chain = auditWriteChain.get(db) ?? Promise.resolve()
   const next = chain
     .catch(() => {
@@ -126,29 +113,31 @@ export function recordAudit(db: DB, e: AuditEvent): Promise<void> {
   return next
 }
 
-async function recordAuditTx(db: DB, e: AuditEvent): Promise<void> {
-  // SAFETY: drizzle's libsql driver keeps the underlying client on a
-  // private $client property; the transaction API is what the chain
-  // needs, and it is stable across the pinned driver version.
-  const client = (
-    db as unknown as {
-      $client: { transaction(mode: string): Promise<TransactionLike> }
-    }
-  ).$client
-  // 'write' acquires the SQLite write lock immediately (the closest thing
-  // to EXCLUSIVE in libsql's modes), so the prev-hash read and the insert
-  // cannot interleave with another writer.
-  const tx = await client.transaction('write')
-  try {
-    const last = await tx.execute(
+/**
+ * Write one chained row: read the head, insert with `row_hash` still empty,
+ * read back the seq the database assigned, then hash content that includes
+ * that seq. Commit is on return; any throw rolls the whole thing back, so a
+ * failed audit never leaves an unchained row that would break verification.
+ *
+ * The in-process chain in `recordAudit` is not an optimization — it is what
+ * keeps the chain linear. On sqlite it avoids the SQLITE_BUSY that two
+ * overlapping write transactions produce on one client; on postgres there is
+ * no such collision, which is worse: two concurrent transactions each read
+ * the same head, each insert, and the chain forks silently. One transaction
+ * per handle is the invariant the hash depends on.
+ */
+async function recordAuditTx(db: CrmDb, e: AuditEvent): Promise<void> {
+  // The seam's transaction holds the write lock for its whole life on sqlite
+  // (`transaction('write')`) and one dedicated pool client on postgres, so
+  // nothing else can append between the head read and the insert.
+  await db.$crm.raw.transaction(async (tx) => {
+    const last = await tx.query(
       `SELECT row_hash FROM audit_log WHERE row_hash != '' ORDER BY seq DESC LIMIT 1`,
     )
     const prevHash =
-      last.rows.length > 0
-        ? String(rowValue(last.rows[0], 'row_hash', 0))
-        : AUDIT_GENESIS_HASH
+      last.length > 0 ? String(last[0].row_hash) : AUDIT_GENESIS_HASH
     const at = new Date().toISOString()
-    await tx.execute(
+    await tx.query(
       `INSERT INTO audit_log
         (at, actor_id, actor_name, action, entity_type, entity_id,
          before_json, after_json, source, ip, prev_hash, row_hash)
@@ -167,13 +156,14 @@ async function recordAuditTx(db: DB, e: AuditEvent): Promise<void> {
         prevHash,
       ],
     )
-    // the transaction result set carries no lastInsertRowid, so read the
-    // row back by its deterministic fields (inside this write-locked tx)
-    const ins = await tx.execute(
+    // Neither driver reports an insert id from inside a transaction, so read
+    // the row back by fields that are unique *because* of the chain: prev_hash
+    // can only be the head once, and this tx holds the writer's lock.
+    const ins = await tx.query(
       'SELECT seq FROM audit_log WHERE at = ? AND action = ? AND prev_hash = ? ORDER BY seq DESC LIMIT 1',
       [at, e.action, prevHash],
     )
-    const seq = Number(String(rowValue(ins.rows[0], 'seq', 0)))
+    const seq = Number(ins[0].seq)
     const rowHash = computeRowHash({
       seq,
       at,
@@ -188,36 +178,11 @@ async function recordAuditTx(db: DB, e: AuditEvent): Promise<void> {
       ip: e.ip ?? null,
       prev_hash: prevHash,
     })
-    await tx.execute('UPDATE audit_log SET row_hash = ? WHERE seq = ?', [
+    await tx.query('UPDATE audit_log SET row_hash = ? WHERE seq = ?', [
       rowHash,
       seq,
     ])
-    await tx.commit()
-  } catch (err) {
-    await tx.rollback()
-    throw err
-  }
-}
-
-/**
- * Minimal structural shape of a libsql result set / transaction.
- * SAFETY: rows are the driver's real `Row` (name + positional access
- * over the `Value` union); no per-column static type exists, so the
- * named union is the most specific honest shape.
- */
-interface ExecuteResult {
-  columns: string[]
-  rows: Row[]
-}
-
-interface TransactionLike {
-  commit(): Promise<void>
-  execute(sql: string, args?: unknown[]): Promise<ExecuteResult>
-  rollback(): Promise<void>
-}
-
-interface ExecuteClient {
-  execute(sql: string, args?: unknown[]): Promise<ExecuteResult>
+  })
 }
 
 export interface VerifyResult {
@@ -240,24 +205,30 @@ export interface VerifyResult {
  *  - every chained row must link (prev_hash = prior row_hash) and its
  *    content hash must recompute to its stored row_hash
  */
-export async function verifyChain(db: DB): Promise<VerifyResult> {
-  // SAFETY: same private $client invariant as recordAuditTx — see there.
-  const client = (db as unknown as { $client: ExecuteClient }).$client
-  const r = await client.execute(
+export async function verifyChain(db: CrmDb): Promise<VerifyResult> {
+  const read = await db.$crm.raw.query(
     `SELECT seq, at, actor_id, actor_name, action, entity_type, entity_id,
             before_json, after_json, source, ip, prev_hash, row_hash
      FROM audit_log ORDER BY seq`,
   )
-  const cols = r.columns
-  const rows = r.rows.map((row) => {
-    const o: Record<string, unknown> = {}
-    cols.forEach((c, i) => {
-      o[c] = rowValue(row, c, i)
-    })
-    // SAFETY: every audit_log column is mapped above; row_hash is the
-    // chain column and is non-empty for chained rows by construction.
-    return o as unknown as AuditRowValues & { row_hash: string }
-  })
+  // Every value goes through the same normalization the writer used, so a
+  // row read back through postgres hashes identically to one read through
+  // sqlite — a chain that only verifies on one dialect is not a chain.
+  const rows: (AuditRowValues & { row_hash: string })[] = read.map((r) => ({
+    action: String(r.action),
+    actor_id: String(r.actor_id),
+    actor_name: String(r.actor_name),
+    after_json: text(r.after_json),
+    at: String(r.at),
+    before_json: text(r.before_json),
+    entity_id: text(r.entity_id),
+    entity_type: text(r.entity_type),
+    ip: text(r.ip),
+    prev_hash: String(r.prev_hash),
+    seq: Number(r.seq),
+    source: String(r.source),
+    row_hash: String(r.row_hash),
+  }))
 
   let legacy = 0
   let chained = 0

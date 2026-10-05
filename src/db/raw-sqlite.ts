@@ -1,6 +1,7 @@
 import type { Client, InValue, ResultSet, Transaction } from '@libsql/client'
 
-import type { RawArgs, RawDB, RawRows } from './seam'
+import * as sqliteTables from './schema-sqlite'
+import type { CrmSeam, RawArgs, RawDB, RawRows } from './seam'
 
 /** libsql hands back column names + array-like rows; the seam wants objects. */
 function rowsFrom(result: ResultSet): RawRows {
@@ -61,5 +62,24 @@ export function sqliteRaw(client: Client): RawDB {
         throw error
       }
     },
+  }
+}
+
+/**
+ * The whole sqlite seam for a client the caller already holds open (AL-1-2).
+ *
+ * `openDB` (`src/db.ts`) builds this for every database it opens. `backup
+ * check` needs the same object for a replica it deliberately does NOT open
+ * through `openDB`: that function memoizes one connection per path, and a
+ * check restores a fresh temp file every run, so a long-lived `serve` would
+ * leak a client per check. Sharing this constructor is what keeps the two
+ * handles indistinguishable to the code that reads them — `verifyChain` runs
+ * against a live database and a restored replica through the same path.
+ */
+export function sqliteSeam(client: Client): CrmSeam {
+  return {
+    dialect: 'sqlite',
+    raw: sqliteRaw(client),
+    schema: { ...sqliteTables },
   }
 }

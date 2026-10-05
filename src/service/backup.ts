@@ -10,8 +10,12 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import type { Client } from '@libsql/client'
+
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
+import { sqliteSeam } from '../db/raw-sqlite'
+import type { CrmDb, RawDB } from '../db/seam'
 import { recordAudit, verifyChain } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import {
@@ -240,6 +244,17 @@ export async function backupRestore(
   return { to }
 }
 
+/**
+ * The rows `backup check` compares. Closed allowlist, not built strings: table
+ * names cannot bind as query parameters, and an interpolated identifier is
+ * exactly what a query layer should never receive.
+ */
+const COUNT_QUERIES = {
+  companies: 'SELECT COUNT(*) AS n FROM companies',
+  contacts: 'SELECT COUNT(*) AS n FROM contacts',
+  deals: 'SELECT COUNT(*) AS n FROM deals',
+} as const
+
 /** `backup check` — restore to a temp file, verify chain, compare counts. */
 export async function backupCheck(
   db: DB,
@@ -273,24 +288,18 @@ export async function backupCheck(
     }
     const restored = rawClient(to)
     try {
-      const v = await verifyChain(wrapper(restored))
+      // A real seam, not a stand-in: `verifyChain` reads through `$crm.raw`, so
+      // the replica is verified by the same code path a live database uses.
+      const replica: CrmDb = { $crm: sqliteSeam(restored) }
+      const v = await verifyChain(replica)
       if (!v.ok) {
         throw new ServiceError(
           'INTERNAL',
           `backup check failed: ${v.reason ?? 'chain broken'}`,
         )
       }
-      const counts = await rawCounts(restored, [
-        'contacts',
-        'companies',
-        'deals',
-      ])
-      const live = (db as unknown as { $client: RawClient }).$client
-      const liveCounts = await rawCounts(live, [
-        'contacts',
-        'companies',
-        'deals',
-      ])
+      const counts = await rawCounts(replica.$crm.raw)
+      const liveCounts = await rawCounts(db.$crm.raw)
       const stale = Object.entries(counts).filter(
         ([k, n]) => n !== liveCounts[k],
       )
@@ -311,29 +320,27 @@ export async function backupCheck(
   }
 }
 
-interface RawClient {
-  close: () => void
-  execute: (sql: string) => Promise<{ rows: unknown[] }>
-}
-
-function rawClient(dbPath: string): RawClient {
+/**
+ * A standalone client for a restored replica file. `openDB` cannot be used
+ * here: it memoizes one handle per path, and every check restores a fresh temp
+ * file, so a long-lived `serve` would leak a connection per run.
+ */
+function rawClient(dbPath: string): Client {
   const { createClient } =
     require('@libsql/client') as typeof import('@libsql/client')
-  return createClient({ url: `file:${dbPath}` }) as unknown as RawClient
+  return createClient({ url: `file:${dbPath}` })
 }
 
-function wrapper(client: RawClient): DB {
-  return { $client: client } as unknown as DB
-}
-
-async function rawCounts(
-  client: RawClient,
-  tables: string[],
-): Promise<Record<string, number>> {
+/**
+ * Row counts through the seam, so both dialects answer the same query.
+ * `COUNT(*)` arrives as a number on sqlite and a string on postgres (bigint),
+ * so `Number` normalizes both before anything compares them.
+ */
+async function rawCounts(raw: RawDB): Promise<Record<string, number>> {
   const out: Record<string, number> = {}
-  for (const t of tables) {
-    const r = await client.execute(`SELECT COUNT(*) AS n FROM ${t}`)
-    out[t] = Number(String((r.rows[0] as Record<string, unknown>).n))
+  for (const [table, sql] of Object.entries(COUNT_QUERIES)) {
+    const rows = await raw.query(sql)
+    out[table] = Number(rows[0]?.n ?? 0)
   }
   return out
 }

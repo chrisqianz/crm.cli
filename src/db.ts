@@ -5,7 +5,7 @@ import { createClient } from '@libsql/client'
 import { sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/libsql'
 
-import { sqliteRaw } from './db/raw-sqlite'
+import { sqliteSeam } from './db/raw-sqlite'
 import * as schema from './db/schema-sqlite'
 import type { CrmSeam } from './db/seam'
 import {
@@ -214,13 +214,7 @@ async function openDbFresh(dbPath: string): Promise<DB> {
 
   // Attach the seam (AL-1-2). Assigned in place, not spread: drizzle keeps
   // query builders on the prototype, and a spread would drop them.
-  return Object.assign(db, {
-    $crm: {
-      dialect: 'sqlite',
-      raw: sqliteRaw(client),
-      schema: { ...schema },
-    } satisfies CrmSeam,
-  })
+  return Object.assign(db, { $crm: sqliteSeam(client) })
 }
 
 /**
