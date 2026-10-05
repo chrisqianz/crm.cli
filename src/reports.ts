@@ -1,8 +1,9 @@
-import { eq, sql } from 'drizzle-orm'
+import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
 import type { DB } from './db'
 import * as schema from './db/schema-sqlite'
+import type { CrmDb } from './db/seam'
 import { dealToRow } from './format'
 
 export function computePipeline(
@@ -260,20 +261,30 @@ export async function computeLost(db: DB, config: CRMConfig) {
   )
 }
 
+/**
+ * Reads through the raw seam rather than `db.all`, which only exists on the
+ * libsql handle. The statement itself is dialect-neutral: the seam translates
+ * the placeholders, and `body` is a text column in the contract, so the row
+ * shape is identical on both backends.
+ */
 async function extractStageNotes(
-  db: DB,
+  db: CrmDb,
   dealId: string,
   stage: string,
 ): Promise<string> {
-  const actResults = (await db.all(
-    sql`SELECT body FROM activities WHERE deal = ${dealId} AND type = 'stage-change' AND body LIKE ${`%${stage}%`}`,
-  )) as { body: string | null }[]
-  const act = actResults[0]
+  const actResults = await db.$crm.raw.query(
+    "SELECT body FROM activities WHERE deal = ? AND type = 'stage-change' AND body LIKE ?",
+    [dealId, `%${stage}%`],
+  )
+  const body = actResults[0]?.body
+  if (typeof body !== 'string') {
+    return ''
+  }
   return (
-    act?.body
-      ?.split('|')
+    body
+      .split('|')
       .slice(1)
-      .map((s: string) => s.trim())
+      .map((s) => s.trim())
       .join(', ') || ''
   )
 }

@@ -412,6 +412,56 @@ Other as-built facts:
 
 **Commit:** `search: FTS5/Postgres-FTS dual path behind the raw seam`
 
+**As built (delivered 2026-10-06, 9 focused tests green on both backends,
+mutation-verified, full matrix 856 pass / 6 fail — the 6 being the
+pre-existing `test/email.test.ts` sandbox baseline).** Three places where
+the implementation had to depart from this brief, each forced by evidence:
+
+- **Named parameters were rejected.** The brief writes `content MATCH @q` /
+  `@@ plainto_tsquery('simple', @q)`. node-postgres 8.23.1 refuses named
+  placeholders outright (`Query values must be an array` — it hands the
+  object to the protocol rather than expanding `@name`), so the seam takes
+  positional `?` with `unknown[]` args on both dialects
+  (`src/db/seam.ts` `RawDB.query(sql, args?)`). Every SQL string in the
+  shipped port uses `?`.
+- **The Postgres predicate targets the generated column, not `content`.**
+  `content @@ plainto_tsquery(...)` cannot work: `content` is `text`, and
+  `@@` needs a `tsvector` left side. The column added by
+  `SCHEMA_SQL_PG_EXTRA` is `tsv tsvector GENERATED ALWAYS AS
+  (to_tsvector('simple', coalesce(content,''))) STORED` with a GIN index,
+  so the predicate is `tsv @@ plainto_tsquery('simple', ?)`.
+- **An explicit empty-query branch is required.** On sqlite an empty query
+  reaches the fallback by accident — `MATCH ''` raises, then `LIKE '%%'`
+  returns every row. Postgres never raises: `plainto_tsquery('simple','')`
+  carries no lexeme, emits only a NOTICE, and the predicate is false for
+  every row, so a literal port would return `[]` where sqlite returns all
+  four entities. `searchIndexRows` therefore branches on `query === ''`
+  and reads `EVERY_ROW_SQL` (`... ORDER BY entity_type, entity_id`) on
+  both dialects.
+
+Two further findings worth keeping:
+
+- **Divergence is in *how often* the fallback is reached, not in the row
+  set** — except for one case. `&`, `|`, `"` are syntax errors in FTS5 (so
+  sqlite falls back) but plain punctuation for `plainto_tsquery` (so
+  Postgres answers from the index). The one true divergence: `"Analytics &
+  Zephyr"` against content `"Zephyr & Analytics …"` — sqlite falls into the
+  substring fallback, which cannot reorder terms, and returns nothing;
+  Postgres matches the word set and returns the company. This is pinned as
+  `known divergence: the fallback cannot reorder terms` rather than papered
+  over. Ordering across the three read paths is genuinely incomparable
+  (bm25 / ts_rank / unordered scan), so the tests compare entity-id sets
+  under an explicit `ORDER BY` only where the SQL itself defines it.
+- **`rebuildSearchIndex` reads outside the transaction it writes in.** The
+  four full-table reads need no write lock, and issuing them inside
+  `raw.transaction` on Postgres would pull a *second* connection from the
+  pool (the transaction holds one), risking self-deadlock under pool
+  pressure. The company list is hoisted out of the loop as well: it used to
+  be re-read per contact. `upsertSearchIndex` goes the other way — its
+  DELETE+INSERT is now a single `raw.transaction`, because on Postgres two
+  separate statements would land on two different pooled connections and a
+  concurrent reader could observe the entity as momentarily unindexed.
+
 ---
 
 ### Task AL-1-5: service layer onto the seam (the mechanical bulk)

@@ -1,69 +1,61 @@
 /**
  * Search service — pure business logic shared by local and remote mode.
  */
-import { eq, sql } from 'drizzle-orm'
-
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { rebuildSearchIndex } from '../db'
-import * as schema from '../db/schema-sqlite'
+import { asRows } from '../db/rows'
+import type { Activity, Company, Contact, Deal } from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { activityToRow, companyToRow, contactToRow, dealToRow } from '../format'
 
+/** One row of `search_index`, limited to the columns both dialects expose. */
 interface FTSRow {
   content: string
   entity_id: string
   entity_type: string
 }
 
+/**
+ * Resolve a search hit into the row shape the CLI prints.
+ *
+ * `SELECT *` is deliberate: the `*ToRow` formatter on the other side of each
+ * branch takes a whole table row, and the drizzle call these branches replace
+ * (`db.select().from(t)`) compiles to the same read. `asRows` carries the shape
+ * assertion once, with its reason, instead of an unchecked cast at each branch.
+ *
+ * The `activity` branch returns `entity_type` where the other three return
+ * `type`. That inconsistency is the published shape of `crm search` output and
+ * is preserved on purpose, not overlooked here.
+ */
 async function lookupEntity(
-  db: DB,
+  db: CrmDb,
   entityType: string,
   id: string,
 ): Promise<Record<string, unknown> | null> {
+  const raw = db.$crm.raw
   if (entityType === 'contact') {
-    const results = await db
-      .select()
-      .from(schema.contacts)
-      .where(eq(schema.contacts.id, id))
-    const c = results[0]
-    if (!c) {
-      return null
-    }
-    return { type: 'contact', ...contactToRow(c) }
+    const [c] = asRows<Contact>(
+      await raw.query('SELECT * FROM contacts WHERE id = ?', [id]),
+    )
+    return c ? { type: 'contact', ...contactToRow(c) } : null
   }
   if (entityType === 'company') {
-    const results = await db
-      .select()
-      .from(schema.companies)
-      .where(eq(schema.companies.id, id))
-    const c = results[0]
-    if (!c) {
-      return null
-    }
-    return { type: 'company', ...companyToRow(c) }
+    const [co] = asRows<Company>(
+      await raw.query('SELECT * FROM companies WHERE id = ?', [id]),
+    )
+    return co ? { type: 'company', ...companyToRow(co) } : null
   }
   if (entityType === 'deal') {
-    const results = await db
-      .select()
-      .from(schema.deals)
-      .where(eq(schema.deals.id, id))
-    const d = results[0]
-    if (!d) {
-      return null
-    }
-    return { type: 'deal', ...dealToRow(d) }
+    const [d] = asRows<Deal>(
+      await raw.query('SELECT * FROM deals WHERE id = ?', [id]),
+    )
+    return d ? { type: 'deal', ...dealToRow(d) } : null
   }
   if (entityType === 'activity') {
-    const results = await db
-      .select()
-      .from(schema.activities)
-      .where(eq(schema.activities.id, id))
-    const a = results[0]
-    if (!a) {
-      return null
-    }
-    const row = activityToRow(a)
-    return { entity_type: 'activity', ...row }
+    const [a] = asRows<Activity>(
+      await raw.query('SELECT * FROM activities WHERE id = ?', [id]),
+    )
+    return a ? { entity_type: 'activity', ...activityToRow(a) } : null
   }
   return null
 }
@@ -73,40 +65,86 @@ export interface SearchParams {
   type?: string
 }
 
+/** Three ways to read the index; only the first two know about dialects. */
+const FULL_TEXT_SQL = {
+  postgres:
+    "SELECT entity_type, entity_id, content FROM search_index WHERE tsv @@ plainto_tsquery('simple', ?)",
+  sqlite:
+    'SELECT entity_type, entity_id, content FROM search_index WHERE content MATCH ?',
+} as const
+
+const SUBSTRING_SQL = {
+  postgres:
+    'SELECT entity_type, entity_id, content FROM search_index WHERE content ILIKE ?',
+  sqlite:
+    'SELECT entity_type, entity_id, content FROM search_index WHERE content LIKE ?',
+} as const
+
+/**
+ * No query at all: every indexed row, in a stable order.
+ *
+ * sqlite reaches this result by accident. `MATCH ''` is a syntax error, so the
+ * substring fallback runs, and `LIKE '%%'` matches everything. Postgres never
+ * reaches the fallback for the same input: `plainto_tsquery('simple', '')`
+ * produces no lexemes, the predicate is false, and the answer is nothing. A
+ * disagreement on the one query neither engine can answer the same way is not
+ * something callers can work around, so the empty query is handled here rather
+ * than translated twice.
+ */
+const EVERY_ROW_SQL =
+  'SELECT entity_type, entity_id, content FROM search_index ORDER BY entity_type, entity_id'
+
+/** Table totals for `crm index status`. A table name cannot be a bind parameter. */
+const COUNT_CONTACTS_SQL = 'SELECT COUNT(*) as cnt FROM contacts'
+const COUNT_COMPANIES_SQL = 'SELECT COUNT(*) as cnt FROM companies'
+const COUNT_DEALS_SQL = 'SELECT COUNT(*) as cnt FROM deals'
+
+/**
+ * Indexed rows matching `query`.
+ *
+ * The full-text predicate is tried first and the substring scan is the
+ * fallback, which is what the command has always done: FTS5 rejects queries it
+ * cannot parse (`&`, `|`, an unterminated `"`) rather than treating them as
+ * text. On Postgres the same class of input is accepted — `plainto_tsquery`
+ * discards punctuation — so the fallback is reached less often, and the
+ * difference is invisible as long as both dialects return the same rows for the
+ * queries that do reach it.
+ *
+ * Order is not comparable across the three paths (bm25, ts_rank, and an
+ * unordered scan each rank differently), so callers get relevance only in the
+ * sense that the scan is the least precise answer.
+ */
+async function searchIndexRows(db: CrmDb, query: string): Promise<FTSRow[]> {
+  const raw = db.$crm.raw
+  if (query === '') {
+    return asRows<FTSRow>(await raw.query(EVERY_ROW_SQL))
+  }
+  const dialect = db.$crm.dialect
+  try {
+    return asRows<FTSRow>(await raw.query(FULL_TEXT_SQL[dialect], [query]))
+  } catch {
+    // Full-text search can reject a query it cannot parse — fall back to text.
+    return asRows<FTSRow>(
+      await raw.query(SUBSTRING_SQL[dialect], [`%${query}%`]),
+    )
+  }
+}
+
 export async function searchFts(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
   const opts = p as SearchParams
   const query = (opts.query ?? '').trim()
+  const hits = (await searchIndexRows(db, query)).filter(
+    (row) => !opts.type || row.entity_type === opts.type,
+  )
   const results: Record<string, unknown>[] = []
-  try {
-    const ftsRows = (await db.all(
-      sql`SELECT * FROM search_index WHERE content MATCH ${query}`,
-    )) as FTSRow[]
-    for (const fr of ftsRows) {
-      if (opts.type && fr.entity_type !== opts.type) {
-        continue
-      }
-      const entity = await lookupEntity(db, fr.entity_type, fr.entity_id)
-      if (entity) {
-        results.push(entity)
-      }
-    }
-  } catch {
-    // FTS5 match can fail on certain queries, fall back to LIKE
-    const likeRows = (await db.all(
-      sql`SELECT * FROM search_index WHERE content LIKE ${`%${query}%`}`,
-    )) as FTSRow[]
-    for (const fr of likeRows) {
-      if (opts.type && fr.entity_type !== opts.type) {
-        continue
-      }
-      const entity = await lookupEntity(db, fr.entity_type, fr.entity_id)
-      if (entity) {
-        results.push(entity)
-      }
+  for (const hit of hits) {
+    const entity = await lookupEntity(db, hit.entity_type, hit.entity_id)
+    if (entity) {
+      results.push(entity)
     }
   }
   return { rows: results.slice(0, config.mount.search_limit) }
@@ -120,7 +158,7 @@ export interface FindParams {
 }
 
 export async function findSemantic(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
@@ -128,7 +166,7 @@ export async function findSemantic(
   const query = (opts.query ?? '').trim()
   const queryWords = query.toLowerCase().split(/\s+/)
   const allEntities: (FTSRow & { score: number })[] = []
-  const indexRows = (await db.all(sql`SELECT * FROM search_index`)) as FTSRow[]
+  const indexRows = asRows<FTSRow>(await db.$crm.raw.query(EVERY_ROW_SQL))
   for (const row of indexRows) {
     if (opts.type && row.entity_type !== opts.type) {
       continue
@@ -166,37 +204,41 @@ export async function findSemantic(
   return { rows: results }
 }
 
+/**
+ * Row counts against indexed counts, so drift is visible without a rebuild.
+ *
+ * `COUNT(*)` is read with `Number()` because Postgres answers aggregate
+ * functions with a string while sqlite answers with a number — the same
+ * divergence the audit chain documents for `seq`. Interpolated into the line
+ * unchanged it would still print correctly here, and be wrong the moment
+ * anybody compared the two numbers in JavaScript.
+ */
 export async function indexStatus(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
 ): Promise<{ lines: string[] }> {
-  const countRows = (await db.all(
-    sql`SELECT entity_type, COUNT(*) as cnt FROM search_index GROUP BY entity_type`,
-  )) as { entity_type: string; cnt: number }[]
+  const countRows = await db.$crm.raw.query(
+    'SELECT entity_type, COUNT(*) as cnt FROM search_index GROUP BY entity_type',
+  )
   const counts: Record<string, number> = {}
   for (const r of countRows) {
-    counts[r.entity_type] = r.cnt
+    counts[String(r.entity_type)] = Number(r.cnt)
   }
-  const contactCount = (
-    await db.select({ cnt: sql<number>`COUNT(*)` }).from(schema.contacts)
-  )[0]
-  const companyCount = (
-    await db.select({ cnt: sql<number>`COUNT(*)` }).from(schema.companies)
-  )[0]
-  const dealCount = (
-    await db.select({ cnt: sql<number>`COUNT(*)` }).from(schema.deals)
-  )[0]
+  const total = async (sql: string): Promise<number> => {
+    const [row] = await db.$crm.raw.query(sql)
+    return Number(row?.cnt ?? 0)
+  }
   return {
     lines: [
-      `contacts: ${contactCount.cnt} (indexed: ${counts.contact || 0})`,
-      `companies: ${companyCount.cnt} (indexed: ${counts.company || 0})`,
-      `deals: ${dealCount.cnt} (indexed: ${counts.deal || 0})`,
+      `contacts: ${await total(COUNT_CONTACTS_SQL)} (indexed: ${counts.contact || 0})`,
+      `companies: ${await total(COUNT_COMPANIES_SQL)} (indexed: ${counts.company || 0})`,
+      `deals: ${await total(COUNT_DEALS_SQL)} (indexed: ${counts.deal || 0})`,
     ],
   }
 }
 
 export async function indexRebuild(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
 ): Promise<Record<string, never>> {
   await rebuildSearchIndex(db)

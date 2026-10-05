@@ -2,16 +2,20 @@ import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
 import { createClient } from '@libsql/client'
-import { sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/libsql'
 
 import { sqliteSeam } from './db/raw-sqlite'
+import { asRows } from './db/rows'
 import * as schema from './db/schema-sqlite'
-import type { CrmSeam } from './db/seam'
+import type { CrmDb, CrmSeam } from './db/seam'
 import {
   buildCompanySearch,
-  buildContactSearch,
   buildDealSearch,
+  type CompanySearchSource,
+  type ContactSearchSource,
+  contactSearchText,
+  type DealSearchSource,
+  listCompanyRefs,
 } from './lib/helpers'
 
 /**
@@ -329,15 +333,15 @@ async function migrateSchema(
 }
 
 export async function upsertSearchIndex(
-  db: DB,
+  db: CrmDb,
   entityType: string,
   entityId: string,
   content: string,
 ): Promise<void> {
-  await db.run(sql`DELETE FROM search_index WHERE entity_id = ${entityId}`)
-  await db.run(
-    sql`INSERT INTO search_index (entity_type, entity_id, content) VALUES (${entityType}, ${entityId}, ${content})`,
-  )
+  await db.$crm.raw.transaction(async (tx) => {
+    await tx.query(SEARCH_INDEX_DELETE, [entityId])
+    await tx.query(SEARCH_INDEX_INSERT, [entityType, entityId, content])
+  })
 }
 
 /**
@@ -375,45 +379,102 @@ async function ensureUsernameIndex(
   }
 }
 
-export async function removeSearchIndex(
-  db: DB,
-  entityId: string,
-): Promise<void> {
-  await db.run(sql`DELETE FROM search_index WHERE entity_id = ${entityId}`)
+/**
+ * Index maintenance.
+ *
+ * `search_index` is an FTS5 table on sqlite and a plain table with a generated
+ * `tsvector` on Postgres (AL-1-4). Both accept the same delete and the same
+ * three-column insert — on Postgres `tsv` is generated from `content`, so
+ * writing it by hand is not merely redundant but rejected by the server.
+ * The statements are therefore shared; only the queries that *read* the index
+ * differ, and they live with the search service that knows the dialect.
+ */
+const SEARCH_INDEX_DELETE = 'DELETE FROM search_index WHERE entity_id = ?'
+const SEARCH_INDEX_INSERT =
+  'INSERT INTO search_index (entity_type, entity_id, content) VALUES (?, ?, ?)'
+
+/** Columns the contact index text is built from, plus the id it is stored under. */
+type ContactIndexRow = ContactSearchSource & { id: string }
+type CompanyIndexRow = CompanySearchSource & { id: string }
+type DealIndexRow = DealSearchSource & { id: string }
+interface ActivityIndexRow {
+  body: string
+  custom_fields: string
+  id: string
+  type: string
 }
 
-export async function rebuildSearchIndex(db: DB): Promise<void> {
-  await db.run(sql`DELETE FROM search_index`)
+const CONTACT_INDEX_ROWS_SQL =
+  'SELECT id, name, emails, phones, addresses, companies, linkedin, x, bluesky, telegram, custom_fields, tags FROM contacts'
+const COMPANY_INDEX_ROWS_SQL =
+  'SELECT id, name, websites, phones, custom_fields, tags FROM companies'
+const DEAL_INDEX_ROWS_SQL =
+  'SELECT id, title, stage, custom_fields, tags FROM deals'
+const ACTIVITY_INDEX_ROWS_SQL =
+  'SELECT id, type, body, custom_fields FROM activities'
 
-  const allContacts = await db.select().from(schema.contacts)
-  for (const c of allContacts) {
-    const content = await buildContactSearch(db, c)
-    await db.run(
-      sql`INSERT INTO search_index (entity_type, entity_id, content) VALUES (${'contact'}, ${c.id}, ${content})`,
-    )
-  }
+export async function removeSearchIndex(
+  db: CrmDb,
+  entityId: string,
+): Promise<void> {
+  await db.$crm.raw.query(SEARCH_INDEX_DELETE, [entityId])
+}
 
-  const allCompanies = await db.select().from(schema.companies)
-  for (const co of allCompanies) {
-    const content = buildCompanySearch(co)
-    await db.run(
-      sql`INSERT INTO search_index (entity_type, entity_id, content) VALUES (${'company'}, ${co.id}, ${content})`,
-    )
-  }
+/**
+ * Rebuild the whole index from the rows currently in the database.
+ *
+ * Two properties the previous per-statement version did not have:
+ *
+ * - The company list is read once. A contact stores its companies by id, so
+ *   building one contact's text needs every company name; reading them per
+ *   contact made a rebuild one query per contact.
+ * - The rewrite is a single transaction. Rebuilding is the operation an admin
+ *   runs when the index has drifted, and a rebuild that died halfway used to
+ *   leave exactly the same problem it was meant to fix: an index holding some
+ *   of the rows.
+ */
+export async function rebuildSearchIndex(db: CrmDb): Promise<void> {
+  const raw = db.$crm.raw
+  // Reads happen before the write lock: none of these tables are being
+  // changed by the rebuild, and on Postgres a read issued from inside the
+  // transaction would take a second connection out of the same pool.
+  const companies = await listCompanyRefs(db)
+  const contacts = asRows<ContactIndexRow>(
+    await raw.query(CONTACT_INDEX_ROWS_SQL),
+  )
+  const companyRows = asRows<CompanyIndexRow>(
+    await raw.query(COMPANY_INDEX_ROWS_SQL),
+  )
+  const dealRows = asRows<DealIndexRow>(await raw.query(DEAL_INDEX_ROWS_SQL))
+  const activityRows = asRows<ActivityIndexRow>(
+    await raw.query(ACTIVITY_INDEX_ROWS_SQL),
+  )
 
-  const allDeals = await db.select().from(schema.deals)
-  for (const d of allDeals) {
-    const content = buildDealSearch(d)
-    await db.run(
-      sql`INSERT INTO search_index (entity_type, entity_id, content) VALUES (${'deal'}, ${d.id}, ${content})`,
-    )
-  }
-
-  const allActivities = await db.select().from(schema.activities)
-  for (const a of allActivities) {
-    const content = [a.type, a.body, a.custom_fields].filter(Boolean).join(' ')
-    await db.run(
-      sql`INSERT INTO search_index (entity_type, entity_id, content) VALUES (${'activity'}, ${a.id}, ${content})`,
-    )
-  }
+  await raw.transaction(async (tx) => {
+    await tx.query('DELETE FROM search_index')
+    for (const c of contacts) {
+      await tx.query(SEARCH_INDEX_INSERT, [
+        'contact',
+        c.id,
+        contactSearchText(c, companies),
+      ])
+    }
+    for (const co of companyRows) {
+      await tx.query(SEARCH_INDEX_INSERT, [
+        'company',
+        co.id,
+        buildCompanySearch(co),
+      ])
+    }
+    for (const d of dealRows) {
+      await tx.query(SEARCH_INDEX_INSERT, ['deal', d.id, buildDealSearch(d)])
+    }
+    for (const a of activityRows) {
+      await tx.query(SEARCH_INDEX_INSERT, [
+        'activity',
+        a.id,
+        [a.type, a.body, a.custom_fields].filter(Boolean).join(' '),
+      ])
+    }
+  })
 }

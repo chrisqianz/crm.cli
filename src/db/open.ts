@@ -170,12 +170,20 @@ export const SCHEMA_SQL_PG_BEST_EFFORT: string[] = [
 ]
 
 /**
- * Tables that exist for one dialect only. The sqlite FTS5 shadow table becomes
- * a plain table here: search itself is ported in AL-1-4, and until then the
- * shape exists so the two databases have the same set of names.
+ * Tables that exist for one dialect only. sqlite gets an FTS5 virtual table;
+ * postgres gets the same-named plain table plus the generated `tsv` column and
+ * the GIN index that make it searchable — `to_tsvector('simple', …)` is the
+ * closest equivalent to fts5's `unicode61` tokenizer, which likewise does no
+ * stemming or stopword removal, so a query answered by one engine is answered
+ * by the other.
+ *
+ * `content` stays nullable and `coalesce` keeps the generated expression
+ * immutable-safe: the sqlite side indexes empty strings rather than nulls, and
+ * `to_tsvector` rejects null input outright.
  */
 export const SCHEMA_SQL_PG_EXTRA: string[] = [
-  'CREATE TABLE IF NOT EXISTS search_index (entity_type text, entity_id text, content text)',
+  "CREATE TABLE IF NOT EXISTS search_index (entity_type text, entity_id text, content text, tsv tsvector GENERATED ALWAYS AS (to_tsvector('simple', coalesce(content, ''))) STORED)",
+  'CREATE INDEX IF NOT EXISTS idx_search_index_tsv ON search_index USING gin (tsv)',
   ...Object.entries(PARTIAL_UNIQUE).flatMap(([table, columns]) =>
     columns.map(
       (column) =>

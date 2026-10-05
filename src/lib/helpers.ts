@@ -6,6 +6,7 @@ import type { DB } from '../db'
 import { openDB, upsertSearchIndex } from '../db'
 import type { Company, Contact, Deal } from '../db/schema-sqlite'
 import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { companyToRow, contactToRow, dealToRow, safeJSON } from '../format'
 import { formatPhone, tryNormalizePhone } from '../normalize'
 import { NEEDS_DB } from '../remote/dispatch'
@@ -322,11 +323,44 @@ export async function checkDupeSocial(
   }
 }
 
-export async function buildContactSearch(db: DB, c: Contact): Promise<string> {
+/** A company as far as the contact index is concerned: an id to match, a name to index. */
+export interface CompanyRef {
+  id: string
+  name: string
+}
+
+/** The contact columns the search index is built from — see `contactSearchText`. */
+export type ContactSearchSource = Pick<
+  Contact,
+  | 'name'
+  | 'emails'
+  | 'phones'
+  | 'addresses'
+  | 'companies'
+  | 'linkedin'
+  | 'x'
+  | 'bluesky'
+  | 'telegram'
+  | 'custom_fields'
+  | 'tags'
+>
+
+/**
+ * Index text for a contact, as a pure function of the contact and the company
+ * list its `companies` ids resolve against.
+ *
+ * The list is a parameter rather than a query because a rebuild needs it for
+ * every contact (a SELECT per contact otherwise), and because a content
+ * builder that touches no database is the same on both dialects — which is
+ * what lets a rebuild run on postgres at all.
+ */
+export function contactSearchText(
+  c: ContactSearchSource,
+  companies: readonly CompanyRef[],
+): string {
   const companyIds: string[] = safeJSON(c.companies)
-  const allCompanies = await db.select().from(schema.companies)
   const companyNames = companyIds
-    .map((id) => allCompanies.find((co) => co.id === id)?.name)
+    .map((id) => companies.find((co) => co.id === id)?.name)
     .filter(Boolean)
   return [
     c.name,
@@ -345,7 +379,29 @@ export async function buildContactSearch(db: DB, c: Contact): Promise<string> {
     .join(' ')
 }
 
-export function buildCompanySearch(co: Company): string {
+/**
+ * Every company id and name, read through the seam. `db.select()` exists only
+ * on the libsql handle, and nothing on the search path needs a third column.
+ */
+export async function listCompanyRefs(db: CrmDb): Promise<CompanyRef[]> {
+  const rows = await db.$crm.raw.query('SELECT id, name FROM companies')
+  return rows.map((row) => ({ id: String(row.id), name: String(row.name) }))
+}
+
+export async function buildContactSearch(
+  db: CrmDb,
+  c: Contact,
+): Promise<string> {
+  return contactSearchText(c, await listCompanyRefs(db))
+}
+
+/** Columns `buildCompanySearch` reads; a narrower parameter keeps every row shape usable. */
+export type CompanySearchSource = Pick<
+  Company,
+  'name' | 'websites' | 'phones' | 'custom_fields' | 'tags'
+>
+
+export function buildCompanySearch(co: CompanySearchSource): string {
   return [
     co.name,
     co.websites,
@@ -357,7 +413,13 @@ export function buildCompanySearch(co: Company): string {
     .join(' ')
 }
 
-export function buildDealSearch(d: Deal): string {
+/** Columns `buildDealSearch` reads. */
+export type DealSearchSource = Pick<
+  Deal,
+  'title' | 'stage' | 'custom_fields' | 'tags'
+>
+
+export function buildDealSearch(d: DealSearchSource): string {
   return [d.title, d.stage, JSON.stringify(safeJSON(d.custom_fields)), d.tags]
     .filter(Boolean)
     .join(' ')
