@@ -60,6 +60,16 @@ export interface RunResult {
   stdout: string
 }
 
+/**
+ * `bun test` pins the runner process to UTC, while a CLI spawned from it
+ * inherits the machine's zone. A "today" computed in the test and the
+ * `localDate()` the child computes for the same instant are then two different
+ * calendar days anywhere east of Greenwich after local midnight (and west of it
+ * before it), which made date fixtures flake on and off. Pinning children to
+ * the runner's own zone makes the two sides speak one calendar.
+ */
+export const RUNNER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
+
 export function createTestContext(opts?: { noConfig?: boolean }) {
   const dir = mkdtempSync(join(tmpdir(), 'crm-test-'))
   const dbPath = join(dir, 'test.db')
@@ -68,8 +78,8 @@ export function createTestContext(opts?: { noConfig?: boolean }) {
     writeFileSync(configPath, TEST_CONFIG)
   }
   const baseEnv = opts?.noConfig
-    ? { ...process.env, NO_COLOR: '1' }
-    : { ...process.env, NO_COLOR: '1', CRM_CONFIG: configPath }
+    ? { ...process.env, NO_COLOR: '1', TZ: RUNNER_TZ }
+    : { ...process.env, NO_COLOR: '1', TZ: RUNNER_TZ, CRM_CONFIG: configPath }
 
   /**
    * Remote mode: when CRM_TEST_REMOTE_SERVER is set (host:port) the CLI runs

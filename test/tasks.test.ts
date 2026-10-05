@@ -8,6 +8,18 @@ import { describe, expect, test } from 'bun:test'
 
 import { createTestContext } from './helpers'
 
+/**
+ * Calendar day in the machine's own timezone, the way `crm task list
+ * --due-today` reads a day (`localDate()` in the service). An ISO/UTC slice
+ * is NOT the same string west of Greenwich after local midnight — or east of
+ * it before it — which made the due-today fixtures land on the wrong day.
+ */
+function localDay(d: Date): string {
+  const month = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${d.getFullYear()}-${month}-${day}`
+}
+
 describe('tasks: follow-up to-dos', () => {
   test('add stores title/owner/due; show exposes them', () => {
     const { runOK, runJSON } = createTestContext()
@@ -74,12 +86,11 @@ describe('tasks: follow-up to-dos', () => {
   test('--due-today and --overdue filter open tasks by date', () => {
     const { runOK, runJSON } = createTestContext()
     // today (local)
-    const today = new Date()
-    const isoToday = today.toISOString().slice(0, 10)
+    const isoToday = localDay(new Date())
     // yesterday (local)
     const y = new Date()
     y.setDate(y.getDate() - 1)
-    const isoYesterday = y.toISOString().slice(0, 10)
+    const isoYesterday = localDay(y)
     runOK('task', 'add', 'DueToday', '--due', isoToday)
     runOK('task', 'add', 'Overdue', '--due', isoYesterday)
     runOK('task', 'add', 'NoDue')
@@ -110,7 +121,7 @@ describe('tasks: follow-up to-dos', () => {
     const { runOK, runJSON } = createTestContext()
     const y = new Date()
     y.setDate(y.getDate() - 2)
-    const iso = y.toISOString().slice(0, 10)
+    const iso = localDay(y)
     runOK('task', 'add', 'Old', '--due', iso)
     runOK('task', 'done', 'Old')
     const overdue = runJSON(

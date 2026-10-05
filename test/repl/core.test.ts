@@ -26,7 +26,7 @@ import {
   startServer,
   type TestServer,
 } from '../enterprise/helpers'
-import { leaked } from '../helpers'
+import { leaked, RUNNER_TZ } from '../helpers'
 
 interface ReplRun {
   code: number
@@ -45,6 +45,7 @@ async function repl(
   const env: Record<string, string | undefined> = {
     ...process.env,
     HOME: home,
+    TZ: RUNNER_TZ,
     CRM_REPL_FORCE: '1',
     CRM_CONFIG: '/dev/null',
     NO_COLOR: '1',
@@ -326,6 +327,7 @@ describe('REPL at a real terminal (pty)', () => {
     const env: Record<string, string | undefined> = {
       ...process.env,
       HOME: home,
+      TZ: RUNNER_TZ,
       CRM_CONFIG: '',
       NODE_EXTRA_CA_CERTS: join(homedir(), '.crm', 'certs', 'server.crt'),
     }
@@ -525,6 +527,7 @@ describe('REPL completion & next-actions (task 4)', () => {
     const env: Record<string, string | undefined> = {
       ...process.env,
       HOME: home,
+      TZ: RUNNER_TZ,
       CRM_CONFIG: '',
       CRM_DB: db,
     }
