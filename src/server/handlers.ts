@@ -5,9 +5,8 @@ import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import type { User } from '../db/schema-sqlite'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { auditMeta, auditSnapshot, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import {
@@ -86,7 +85,9 @@ function strParam(params: Record<string, unknown>, name: string): string {
 
 // ── Lookups ──
 
-async function findUser(db: DB, username: string): Promise<User | null> {
+async function findUser(db: CrmDb, username: string): Promise<User | null> {
+  const schema = db.$crm.schema
+
   const rows = await db
     .select()
     .from(schema.users)
@@ -101,7 +102,9 @@ async function findUser(db: DB, username: string): Promise<User | null> {
   return rows.find((r) => r.disabled_at) ?? rows[0]
 }
 
-async function findUserById(db: DB, id: string): Promise<User | null> {
+async function findUserById(db: CrmDb, id: string): Promise<User | null> {
+  const schema = db.$crm.schema
+
   const rows = await db
     .select()
     .from(schema.users)
@@ -109,7 +112,9 @@ async function findUserById(db: DB, id: string): Promise<User | null> {
   return rows[0] ?? null
 }
 
-async function userCount(db: DB): Promise<number> {
+async function userCount(db: CrmDb): Promise<number> {
+  const schema = db.$crm.schema
+
   const rows = await db.select({ id: schema.users.id }).from(schema.users)
   return rows.length
 }
@@ -122,7 +127,7 @@ export interface AuthResult {
 }
 
 export function handleAuth(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
   method: string,
@@ -147,7 +152,7 @@ export function handleAuth(
  * taking whoever the directory happened to return first.
  */
 async function lookupDirectoryUser(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   dir: LdapDirectory,
   username: string,
@@ -232,7 +237,7 @@ function allowAttempt(key: string, limit: number): boolean {
 }
 
 async function consumeLoginAttempt(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { ip: string },
   username: string,
@@ -257,11 +262,13 @@ async function consumeLoginAttempt(
 }
 
 async function authLogin(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
   params: Record<string, unknown>,
 ): Promise<AuthResult> {
+  const schema = db.$crm.schema
+
   const username = normalizeUsername(strParam(params, 'username'))
   const password = strParam(params, 'password')
   await consumeLoginAttempt(db, config, ctx, username)
@@ -417,7 +424,7 @@ function passwordMustChange(
  * standard lockout applies to local-mode writes, not to this path).
  */
 async function directoryLogin(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
   dir: LdapDirectory,
@@ -425,6 +432,8 @@ async function directoryLogin(
   password: string,
   entry: LdapUser,
 ): Promise<AuthResult> {
+  const schema = db.$crm.schema
+
   // The directory's own id is the identity, normalized: a filter on mail
   // (or anything else) must not provision a CRM user under whatever the
   // caller typed, and case variants must land on one row.
@@ -531,9 +540,11 @@ async function directoryLogin(
 }
 
 async function authToken(
-  db: DB,
+  db: CrmDb,
   params: Record<string, unknown>,
 ): Promise<AuthResult> {
+  const schema = db.$crm.schema
+
   const token = strParam(params, 'token')
   const rows = await db
     .select()
@@ -564,11 +575,13 @@ async function authToken(
 }
 
 async function authBootstrap(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
   params: Record<string, unknown>,
 ): Promise<AuthResult> {
+  const schema = db.$crm.schema
+
   if (ctx.bootstrapCode === null) {
     throw new ServerError(
       'AUTH',
@@ -642,11 +655,13 @@ async function authBootstrap(
 }
 
 async function issueToken(
-  db: DB,
+  db: CrmDb,
   userId: string,
   name: string,
   expiresAt: Date | null,
 ): Promise<string> {
+  const schema = db.$crm.schema
+
   const token = generateToken()
   await db.insert(schema.tokens).values({
     id: `tok_${ulid()}`,
@@ -670,7 +685,7 @@ export interface LiveStats {
 }
 
 export async function handleCommand(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { ip: string; live?: LiveStats },
   identity: Identity,
@@ -762,7 +777,7 @@ export async function handleCommand(
 }
 
 function handleAdmin(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   method: string,
@@ -795,11 +810,13 @@ function handleAdmin(
 }
 
 async function adminUserCreate(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const username = normalizeUsername(strParam(params, 'username'))
   if (!USERNAME_RE.test(username)) {
     throw new ServerError(
@@ -856,7 +873,9 @@ async function adminUserCreate(
   return { user: publicUser(user), initial_password: initialPassword }
 }
 
-async function adminUserList(db: DB): Promise<Record<string, unknown>> {
+async function adminUserList(db: CrmDb): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const rows = await db.select().from(schema.users)
   return {
     users: rows.map((u) => ({
@@ -868,11 +887,13 @@ async function adminUserList(db: DB): Promise<Record<string, unknown>> {
 }
 
 async function adminUserSetRole(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const username = strParam(params, 'username')
   const role = strParam(params, 'role')
   if (!VALID_ROLES.includes(role as (typeof VALID_ROLES)[number])) {
@@ -916,12 +937,14 @@ async function adminUserSetRole(
 }
 
 async function adminUserDisableEnable(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
   disable: boolean,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const username = strParam(params, 'username')
   const u = await findUser(db, username)
   if (!u) {
@@ -959,11 +982,13 @@ async function adminUserDisableEnable(
 }
 
 async function adminUserResetPassword(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const username = strParam(params, 'username')
   const u = await findUser(db, username)
   if (!u) {
@@ -1005,11 +1030,13 @@ async function adminUserResetPassword(
 }
 
 async function adminUserDelete(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const username = strParam(params, 'username')
   const u = await findUser(db, username)
   if (!u) {
@@ -1049,12 +1076,14 @@ async function adminUserDelete(
 }
 
 async function changePassword(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const current = strParam(params, 'current')
   const newPass = strParam(params, 'new')
   const u = await findUserById(db, identity.id)
@@ -1117,7 +1146,7 @@ async function changePassword(
 }
 
 async function adminTokenCreate(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
@@ -1151,7 +1180,9 @@ async function adminTokenCreate(
   return { token, name, username: target.username }
 }
 
-async function adminTokenList(db: DB): Promise<Record<string, unknown>> {
+async function adminTokenList(db: CrmDb): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const tokens = await db.select().from(schema.tokens)
   const users = await db.select().from(schema.users)
   const byId = new Map(users.map((u) => [u.id, u.username]))
@@ -1168,11 +1199,13 @@ async function adminTokenList(db: DB): Promise<Record<string, unknown>> {
 }
 
 async function adminTokenRevoke(
-  db: DB,
+  db: CrmDb,
   ctx: { ip: string },
   identity: Identity,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const id = strParam(params, 'id')
   const rows = await db
     .select()
@@ -1289,10 +1322,12 @@ function newestLtxMtime(replicaDir: string): string | null {
 }
 
 export async function serverStatus(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   live: LiveStats | undefined,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const [userCount, tokenCount] = await Promise.all([
     db
       .select({ n: sql<number>`count(*)` })

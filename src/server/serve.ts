@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import tls, { type TLSSocket } from 'node:tls'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
+import type { CrmDb } from '../db/seam'
 import { recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import { certsDir, ensurePrivateDir } from '../lib/paths'
@@ -16,7 +16,7 @@ export interface ServeOptions {
   bootstrapCode: string | null
   certOverride?: string
   config: CRMConfig
-  db: DB
+  db: CrmDb
   host: string
   keyOverride?: string
   /** 0 = let the OS assign a free port (used by tests) */

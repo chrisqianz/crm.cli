@@ -8,8 +8,9 @@
  * password comes from the process env `CRM_SMTP_PASSWORD` — the same
  * posture as the LDAP bind password.
  */
+
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
+import type { CrmDb } from '../db/seam'
 import { safeJSON } from '../format'
 import { ServiceError } from '../lib/errors'
 import { smtpSend } from '../lib/smtp'
@@ -30,10 +31,12 @@ export interface EmailSendParams {
 }
 
 export async function emailSend(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ sent_to: string; subject: string }> {
+  // SAFETY: RPC params are a wire record; this is the typed view of the
+  // fields emailSend reads. Every access below is optional-guarded.
   const opts = p as unknown as EmailSendParams
   if (!config.mail.host) {
     throw new ServiceError(

@@ -3,7 +3,6 @@ import type { Command } from 'commander'
 import { loadConfig, projectAuthConfigWarning } from '../config'
 import { openDB } from '../db'
 import { resolveBackend } from '../db/open'
-import * as schema from '../db/schema-sqlite'
 import { die, gConfig, gDb } from '../lib/helpers'
 import { ldapWarnings, validateLdapConfig } from '../lib/ldap'
 import {
@@ -86,6 +85,7 @@ export function registerServeCommand(program: Command): void {
           console.error(`Warning: ${warning}`)
         }
         const db = await openDB(config.database.path)
+        const schema = db.$crm.schema
         const users = await db
           .select({ id: schema.users.id })
           .from(schema.users)

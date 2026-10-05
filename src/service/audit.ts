@@ -5,8 +5,7 @@
 import { and, desc, eq, gt, like } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { verifyChain } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 
@@ -25,10 +24,12 @@ function parseLimit(v: unknown, fallback: number): number {
 }
 
 export async function auditList(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const limit = parseLimit(p.limit, 50)
   const actor = p.actor as string | undefined
   const action = p.action as string | undefined
@@ -66,7 +67,7 @@ export async function auditList(
 }
 
 export async function auditVerify(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   _p: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -83,10 +84,12 @@ export async function auditVerify(
 
 /** Export = the full chain (no limit), for json/csv consumers. */
 export async function auditExport(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   _p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const rows = await db
     .select()
     .from(schema.auditLog)
@@ -108,10 +111,12 @@ function parseSeq(v: unknown): number {
 
 /** One audit row by chain seq, for the diff view (B4). */
 export async function auditGet(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ row: Record<string, unknown> }> {
+  const schema = db.$crm.schema
+
   const seq = parseSeq(p.seq)
   const rows = await db
     .select()

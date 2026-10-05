@@ -4,8 +4,7 @@
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { safeJSON } from '../format'
 import {
   computeConversion,
@@ -26,9 +25,11 @@ function periodToDate(period: string): string | null {
 }
 
 export async function reportPipeline(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const deals = await db.select().from(schema.deals)
   const summary = computePipeline(deals, config.pipeline.stages)
   const total = {
@@ -45,10 +46,12 @@ export interface ReportActivityParams {
 }
 
 export async function reportActivity(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as ReportActivityParams
   let activities = await db.select().from(schema.activities)
   if (opts.period) {
@@ -101,7 +104,7 @@ export interface ReportStaleParams {
 }
 
 export async function reportStale(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
@@ -115,7 +118,7 @@ export async function reportStale(
 }
 
 export async function reportConversion(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
@@ -125,7 +128,7 @@ export async function reportConversion(
 }
 
 export async function reportVelocity(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
@@ -136,7 +139,7 @@ export async function reportVelocity(
 }
 
 export async function reportForecast(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
@@ -158,7 +161,7 @@ export async function reportForecast(
 }
 
 export async function reportWon(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
@@ -174,7 +177,7 @@ export async function reportWon(
 }
 
 export async function reportLost(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {

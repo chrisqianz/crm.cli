@@ -4,19 +4,20 @@
 import { eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { safeJSON } from '../format'
 import { ServiceError } from '../lib/errors'
 import { now } from '../lib/helpers'
 import { resolveEntity } from '../resolve'
 
 async function setTags(
-  db: DB,
+  db: CrmDb,
   entityType: string,
   entityId: string,
   tags: string[],
 ): Promise<void> {
+  const schema = db.$crm.schema
+
   if (entityType === 'contact') {
     await db
       .update(schema.contacts)
@@ -48,7 +49,7 @@ async function setTags(
 }
 
 export async function tagEntity(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<Record<string, never>> {
@@ -70,7 +71,7 @@ export async function tagEntity(
 }
 
 export async function untagEntity(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<Record<string, never>> {
@@ -90,10 +91,12 @@ export async function untagEntity(
 }
 
 export async function tagList(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const type = p.type as string | undefined
   const tagMap: Record<string, number> = {}
   if (!type || type === 'contact') {

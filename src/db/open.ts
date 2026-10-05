@@ -1,3 +1,4 @@
+import { drizzle as drizzlePg } from 'drizzle-orm/node-postgres'
 import type { Pool } from 'pg'
 
 import type { CRMConfig } from '../config'
@@ -209,18 +210,46 @@ export async function bootstrapPgSchema(seam: CrmSeam): Promise<void> {
   }
 }
 
-class PostgresHandle implements CrmDb {
-  readonly $crm: CrmSeam
+/**
+ * A postgres database as the service layer sees it: the four query verbs, the
+ * seam, and the pool (kept so `closeDatabase` can end it — a pool otherwise
+ * holds the event loop open).
+ */
+export interface PostgresHandle extends CrmDb {
   readonly pool: Pool
+}
 
-  constructor(pool: Pool, url: string) {
-    this.pool = pool
-    this.$crm = {
-      dialect: 'postgres',
-      raw: postgresRaw(pool),
-      schema: { ...pgTables, url },
-    }
+/**
+ * Bind a live pool into the handle shape the service layer consumes.
+ *
+ * SAFETY: this is the ONE assertion in the seam — everywhere else the types
+ * are derived. `CrmDb`'s verbs are typed against the sqlite table namespace
+ * (`CrmTables`) because drizzle binds column types to a dialect module and a
+ * union of two db instance types does not type-check (both verified by spike).
+ * What is handed back here is drizzle's POSTGRES builder over `schema-pg`,
+ * which declares the same columns with the same `text()`/`integer()` scalars,
+ * so both drivers return identical row shapes and the same query source
+ * compiles to valid SQL on either server. Two things keep the claim honest:
+ * `CrmDb` exposes only the four verbs that exist on both dialects (no
+ * `onConflictDoUpdate`, no `db.run`), and `test/enterprise/postgres-open.test.ts`
+ * runs builder queries against a real server rather than trusting the cast.
+ */
+function pgHandle(pool: Pool): PostgresHandle {
+  const seam = {
+    dialect: 'postgres',
+    raw: postgresRaw(pool),
+    schema: pgTables,
   }
+  const builder = drizzlePg(pool, { schema: pgTables })
+  // SAFETY: asserted, not derived — `CrmDb`'s verbs are typed against the sqlite
+  // table namespace because drizzle binds column types to a dialect module, while
+  // this is drizzle's POSTGRES builder over `schema-pg`. Both declarations use the
+  // same text()/integer() scalars, so the row shapes the verbs resolve to are
+  // identical on either server. See the function doc comment for what checks it.
+  return Object.assign(builder, {
+    $crm: seam,
+    pool,
+  }) as unknown as PostgresHandle
 }
 
 /**
@@ -255,7 +284,7 @@ async function openPgDb(url: string): Promise<PostgresHandle> {
       `[db] a postgres connection died; the pool will replace it: ${error.message}`,
     )
   })
-  const handle = new PostgresHandle(pool, url)
+  const handle = pgHandle(pool)
   try {
     await bootstrapPgSchema(handle.$crm)
   } catch (error) {

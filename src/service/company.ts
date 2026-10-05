@@ -4,9 +4,8 @@
 import { and, eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { removeSearchIndex, upsertSearchIndex } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { applyFilter, parseFilter } from '../filter'
 import { companyToRow, safeJSON } from '../format'
 import { runHook } from '../hooks'
@@ -40,10 +39,12 @@ export interface CompanyAddParams {
 }
 
 export async function companyAdd(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const opts = p as CompanyAddParams
   opts.name = (opts.name ?? '').trim()
   opts.website = (opts.website ?? []).map((w) => w.trim())
@@ -125,10 +126,12 @@ export interface CompanyListParams {
 }
 
 export async function companyList(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as CompanyListParams
   const tag = opts.tag
   const filter = opts.filter
@@ -163,7 +166,7 @@ export async function companyList(
 }
 
 export async function companyShow(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ detail: Record<string, unknown> }> {
@@ -188,10 +191,12 @@ export interface CompanyEditParams {
 }
 
 export async function companyEdit(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const opts = p as CompanyEditParams
   if (opts.name) {
@@ -327,10 +332,12 @@ export async function companyEdit(
 }
 
 export async function companyRm(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<Record<string, never>> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const force = p.force as boolean | undefined
   const co = await resolveCompany(db, ref, config)
@@ -376,10 +383,12 @@ export async function companyRm(
 }
 
 export async function companyMerge(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const id1 = (p.id1 as string) ?? ''
   const id2 = (p.id2 as string) ?? ''
   const c1 = await resolveCompany(db, id1, config),
@@ -458,7 +467,7 @@ export async function companyMerge(
 }
 
 export async function companyResolve(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string; name: string }> {

@@ -4,8 +4,7 @@ import { join } from 'node:path'
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
-import type { DB } from './db'
-import * as schema from './db/schema-sqlite'
+import type { CrmDb } from './db/seam'
 import { safeJSON } from './format'
 import {
   activityFilename,
@@ -39,10 +38,12 @@ function ensureDir(dir: string): void {
 }
 
 export async function generateFS(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   outDir: string,
 ): Promise<void> {
+  const schema = db.$crm.schema
+
   ensureDir(outDir)
   ensureDir(join(outDir, 'contacts'))
   ensureDir(join(outDir, 'contacts', '_by-email'))

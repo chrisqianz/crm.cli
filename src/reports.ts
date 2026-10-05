@@ -1,8 +1,6 @@
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
-import type { DB } from './db'
-import * as schema from './db/schema-sqlite'
 import type { CrmDb } from './db/seam'
 import { dealToRow } from './format'
 
@@ -20,10 +18,12 @@ export function computePipeline(
 }
 
 export async function computeStale(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   days = 30,
 ): Promise<Record<string, unknown>[]> {
+  const schema = db.$crm.schema
+
   const cutoff = new Date(Date.now() - days * 86_400_000).toISOString()
   const terminal = new Set([
     config.pipeline.won_stage,
@@ -77,10 +77,12 @@ export async function computeStale(
 }
 
 export async function computeConversion(
-  db: DB,
+  db: CrmDb,
   stages: string[],
   since?: string,
 ) {
+  const schema = db.$crm.schema
+
   let activities = await db
     .select()
     .from(schema.activities)
@@ -152,10 +154,12 @@ export function formatDuration(ms: number): string {
 }
 
 export async function computeVelocity(
-  db: DB,
+  db: CrmDb,
   stages: string[],
   wonStage?: string,
 ) {
+  const schema = db.$crm.schema
+
   const activities = await db
     .select()
     .from(schema.activities)
@@ -213,7 +217,9 @@ export async function computeVelocity(
   })
 }
 
-export async function computeForecast(db: DB, config: CRMConfig) {
+export async function computeForecast(db: CrmDb, config: CRMConfig) {
+  const schema = db.$crm.schema
+
   const terminal = new Set([
     config.pipeline.won_stage,
     config.pipeline.lost_stage,
@@ -231,7 +237,9 @@ export async function computeForecast(db: DB, config: CRMConfig) {
   }))
 }
 
-export async function computeWon(db: DB, config: CRMConfig) {
+export async function computeWon(db: CrmDb, config: CRMConfig) {
+  const schema = db.$crm.schema
+
   const wonStage = config.pipeline.won_stage
   const deals = await db
     .select()
@@ -246,7 +254,9 @@ export async function computeWon(db: DB, config: CRMConfig) {
   )
 }
 
-export async function computeLost(db: DB, config: CRMConfig) {
+export async function computeLost(db: CrmDb, config: CRMConfig) {
+  const schema = db.$crm.schema
+
   const lostStage = config.pipeline.lost_stage
   const deals = await db
     .select()

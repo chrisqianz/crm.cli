@@ -4,9 +4,8 @@
 import { and, eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { removeSearchIndex, upsertSearchIndex } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { applyFilter, parseFilter } from '../filter'
 import { dealToRow, safeJSON } from '../format'
 import { runHook } from '../hooks'
@@ -46,10 +45,12 @@ export interface DealAddParams {
 }
 
 export async function dealAdd(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const opts = p as DealAddParams
   opts.title = (opts.title ?? '').trim()
   opts.contact = (opts.contact ?? []).map((c) => c.trim())
@@ -187,10 +188,12 @@ export interface DealListParams {
 }
 
 export async function dealList(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as DealListParams
   const stage = opts.stage
   const minValue = opts.minValue
@@ -272,7 +275,7 @@ export async function dealList(
 }
 
 export async function dealShow(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ detail: Record<string, unknown> }> {
@@ -301,10 +304,12 @@ export interface DealEditParams {
 }
 
 export async function dealEdit(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const opts = p as DealEditParams
   if (opts.title) {
@@ -429,10 +434,12 @@ export async function dealEdit(
 }
 
 export async function dealMove(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const stage = ((p.stage as string) ?? '').trim()
   const note = p.note ? (p.note as string).trim() : undefined
@@ -515,10 +522,12 @@ export async function dealMove(
 }
 
 export async function dealRm(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<Record<string, never>> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const force = p.force as boolean | undefined
   const d = await resolveDeal(db, ref)
@@ -548,7 +557,7 @@ export async function dealRm(
 }
 
 export async function dealResolve(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string; title: string }> {
@@ -561,9 +570,11 @@ export async function dealResolve(
 }
 
 export async function pipelineSummary(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const deals = await db.select().from(schema.deals)
   const summary = config.pipeline.stages.map((stage) => ({
     stage,

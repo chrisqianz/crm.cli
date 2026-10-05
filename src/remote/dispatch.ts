@@ -15,10 +15,11 @@
  * In remote mode no local database is ever opened: the CLI renders the
  * server's response locally.
  */
+
 import type { CRMConfig } from '../config'
 import { loadConfig } from '../config'
-import type { DB } from '../db'
 import { openDB } from '../db'
+import type { CrmDb } from '../db/seam'
 import { auditMeta, auditSnapshot, osUserName, recordAudit } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import {
@@ -408,7 +409,7 @@ export function requireLocalHost(): void {
  * same treatment as `dispatch` (ServiceError → die with exit-code mapping).
  */
 export async function localOnly<T extends Record<string, unknown>>(
-  fn: (db: DB, config: CRMConfig) => Promise<T>,
+  fn: (db: CrmDb, config: CRMConfig) => Promise<T>,
 ): Promise<T> {
   requireLocalHost()
   const { db, config } = await getLocalCtx()

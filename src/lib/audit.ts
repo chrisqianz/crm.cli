@@ -16,9 +16,7 @@ import { userInfo } from 'node:os'
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
-import * as entitySchema from '../db/schema-sqlite'
-import type { CrmDb } from '../db/seam'
+import type { CrmDb, CrmRawDb } from '../db/seam'
 import { resolveEntity, resolveTask } from '../resolve'
 
 /** Genesis prev_hash for the first chained row of a table. */
@@ -205,7 +203,7 @@ export interface VerifyResult {
  *  - every chained row must link (prev_hash = prior row_hash) and its
  *    content hash must recompute to its stored row_hash
  */
-export async function verifyChain(db: CrmDb): Promise<VerifyResult> {
+export async function verifyChain(db: CrmRawDb): Promise<VerifyResult> {
   const read = await db.$crm.raw.query(
     `SELECT seq, at, actor_id, actor_name, action, entity_type, entity_id,
             before_json, after_json, source, ip, prev_hash, row_hash
@@ -302,7 +300,7 @@ export function osUserName(): string {
 
 /** Best-effort entity target of a write method, for the audit row. */
 export async function auditMeta(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   method: string,
   params: Record<string, unknown>,
@@ -364,7 +362,7 @@ export async function auditMeta(
  * result instead of an entity row.
  */
 export async function auditSnapshot(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   method: string,
   params: Record<string, unknown>,
@@ -385,10 +383,11 @@ export async function auditSnapshot(
 }
 
 export async function auditEntityRow(
-  db: DB,
+  db: CrmDb,
   entityType: string,
   entityId: string,
 ): Promise<Record<string, unknown> | null> {
+  const entitySchema = db.$crm.schema
   if (entityType === 'contact') {
     const rows = await db
       .select()

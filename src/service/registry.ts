@@ -7,8 +7,9 @@
  *  - writer: read + write
  *  - admin/owner: everything (admin.* methods stay in handlers.ts)
  */
+
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
+import type { CrmDb } from '../db/seam'
 import { activityList, activityLog } from './activity'
 import { auditExport, auditGet, auditList, auditVerify } from './audit'
 import { backupStatus, backupSync } from './backup'
@@ -67,7 +68,7 @@ import { taskAdd, taskDone, taskList, taskRm, taskShow } from './task'
 
 export type MethodRole = 'reader' | 'writer' | 'admin'
 export type ServiceFn = (
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   params: Record<string, unknown>,
 ) => Promise<Record<string, unknown>>

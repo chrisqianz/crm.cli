@@ -17,8 +17,8 @@ import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { resolveBackend } from '../db/open'
+import type { CrmDb } from '../db/seam'
 import { ServiceError } from '../lib/errors'
 import { consoleHtml } from './console'
 import {
@@ -31,7 +31,7 @@ import {
 export interface AdminOptions {
   bootstrapCode: string | null
   config: CRMConfig
-  db: DB
+  db: CrmDb
   host: string
   /**
    * D-A2: what the generated install.sh installs. Empty string = the
@@ -92,7 +92,7 @@ export function startAdminServer(
 interface Ctx {
   bootstrapCode: string | null
   config: CRMConfig
-  db: DB
+  db: CrmDb
   /** D-A2: install source for the generated install.sh ('' = public pkg). */
   installSource: string
   rpcHost: string
@@ -122,7 +122,7 @@ function bearer(req: http.IncomingMessage): string | null {
 }
 
 async function resolveIdentity(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   ctx: { bootstrapCode: string | null; ip: string },
   token: string | null,

@@ -3,9 +3,8 @@
  */
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { upsertSearchIndex } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { activityToRow } from '../format'
 import { runHook } from '../hooks'
 import { ServiceError } from '../lib/errors'
@@ -43,10 +42,12 @@ export interface LogParams {
 }
 
 export async function activityLog(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<Record<string, never>> {
+  const schema = db.$crm.schema
+
   const opts = p as LogParams
   const type = (opts.type ?? '').trim()
   const body = (opts.body ?? '').trim()
@@ -150,10 +151,12 @@ export interface ActivityListParams {
 }
 
 export async function activityList(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as ActivityListParams
   const contact = opts.contact
   const company = opts.company

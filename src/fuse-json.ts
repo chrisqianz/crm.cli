@@ -1,9 +1,8 @@
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
-import type { DB } from './db'
 import type { Activity, Company, Contact, Deal } from './db/schema-sqlite'
-import * as schema from './db/schema-sqlite'
+import type { CrmDb } from './db/seam'
 import { safeJSON } from './format'
 
 export const LLM_TXT = `# CRM Filesystem
@@ -106,10 +105,12 @@ export function activityFilename(a: Activity): string {
 }
 
 export async function buildContactJSON(
-  db: DB,
+  db: CrmDb,
   c: Contact,
   config: CRMConfig,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const emails: string[] = safeJSON(c.emails)
   const phones: string[] = safeJSON(c.phones)
   const companyIds: string[] = safeJSON(c.companies)
@@ -171,9 +172,11 @@ export async function buildContactJSON(
 }
 
 export async function buildCompanyJSON(
-  db: DB,
+  db: CrmDb,
   co: Company,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const websites: string[] = safeJSON(co.websites)
   const phones: string[] = safeJSON(co.phones)
   const tags: string[] = safeJSON(co.tags)
@@ -210,9 +213,11 @@ export async function buildCompanyJSON(
 }
 
 export async function buildDealJSON(
-  db: DB,
+  db: CrmDb,
   d: Deal,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const contactIds: string[] = safeJSON(d.contacts)
   const tags: string[] = safeJSON(d.tags)
   const customFields = safeJSON(d.custom_fields) || {}

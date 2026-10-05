@@ -6,10 +6,9 @@
 import { eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { upsertSearchIndex } from '../db'
 import type { Contact } from '../db/schema-sqlite'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import {
   activityToRow,
   companyToRow,
@@ -71,7 +70,7 @@ export interface ImportContactsParams {
 }
 
 export async function importContacts(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{
@@ -80,6 +79,8 @@ export async function importContacts(
   errors: number
   dryRunLines: string[]
 }> {
+  const schema = db.$crm.schema
+
   const opts = p as ImportContactsParams
   const records = opts.records ?? []
   let imported = 0
@@ -237,10 +238,12 @@ export interface ImportCompaniesParams {
 }
 
 export async function importCompanies(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ imported: number; dryRunLines: string[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as ImportCompaniesParams
   const records = opts.records ?? []
   let imported = 0
@@ -313,10 +316,12 @@ export interface ImportDealsParams {
 }
 
 export async function importDeals(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ imported: number; dryRunLines: string[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as ImportDealsParams
   const records = opts.records ?? []
   let imported = 0
@@ -378,9 +383,11 @@ export async function importDeals(
 }
 
 export async function exportContacts(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const rows = (await db.select().from(schema.contacts)).map((c) =>
     contactToRow(c),
   )
@@ -388,9 +395,11 @@ export async function exportContacts(
 }
 
 export async function exportCompanies(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const rows = (await db.select().from(schema.companies)).map((c) =>
     companyToRow(c),
   )
@@ -398,15 +407,17 @@ export async function exportCompanies(
 }
 
 export async function exportDeals(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const rows = (await db.select().from(schema.deals)).map((d) => dealToRow(d))
   return { rows }
 }
 
 export async function exportAll(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
 ): Promise<{
   data: {
@@ -417,6 +428,8 @@ export async function exportAll(
     tasks: Record<string, unknown>[]
   }
 }> {
+  const schema = db.$crm.schema
+
   return {
     data: {
       contacts: (await db.select().from(schema.contacts)).map((c) =>
@@ -450,9 +463,11 @@ export function splitField(val: string | undefined): string[] {
 }
 
 async function findContactByEmail(
-  db: DB,
+  db: CrmDb,
   email: string,
 ): Promise<Contact | null> {
+  const schema = db.$crm.schema
+
   const all = await db.select().from(schema.contacts)
   for (const c of all) {
     const emails: string[] = safeJSON(c.emails)

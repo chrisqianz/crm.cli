@@ -13,9 +13,8 @@ import { join } from 'node:path'
 import type { Client } from '@libsql/client'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { sqliteSeam } from '../db/raw-sqlite'
-import type { CrmDb, RawDB } from '../db/seam'
+import type { CrmDb, CrmRawDb, RawDB } from '../db/seam'
 import { recordAudit, verifyChain } from '../lib/audit'
 import { ServiceError } from '../lib/errors'
 import {
@@ -53,7 +52,7 @@ function requireDbPath(config: CRMConfig): string {
 }
 
 async function audit(
-  db: DB,
+  db: CrmDb,
   action: AuditEvent,
   detail: Record<string, unknown>,
 ): Promise<void> {
@@ -90,7 +89,7 @@ function loadDestination(configPath: string): Destination {
 
 /** `backup init --destination <path|s3://bucket/prefix>`. */
 export async function backupInit(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -124,7 +123,7 @@ export async function backupInit(
 
 /** `backup sync` — one-shot replication pass. */
 export async function backupSync(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   _params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -162,7 +161,7 @@ interface StatusRow {
 
 /** `backup status` — per-DB replication status from litestream. */
 export async function backupStatus(
-  _db: DB,
+  _db: CrmDb,
   config: CRMConfig,
   _params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -209,7 +208,7 @@ export async function backupStatus(
 
 /** `backup restore --to <path>` — rebuild a fresh DB from the replica. */
 export async function backupRestore(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -257,7 +256,7 @@ const COUNT_QUERIES = {
 
 /** `backup check` — restore to a temp file, verify chain, compare counts. */
 export async function backupCheck(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   _params: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
@@ -290,7 +289,7 @@ export async function backupCheck(
     try {
       // A real seam, not a stand-in: `verifyChain` reads through `$crm.raw`, so
       // the replica is verified by the same code path a live database uses.
-      const replica: CrmDb = { $crm: sqliteSeam(restored) }
+      const replica: CrmRawDb = { $crm: sqliteSeam(restored) }
       const v = await verifyChain(replica)
       if (!v.ok) {
         throw new ServiceError(

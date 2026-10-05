@@ -2,9 +2,8 @@
  * Dupes service — pure business logic shared by local and remote mode.
  */
 
-import type { DB } from '../db'
 import type { Company, Contact } from '../db/schema-sqlite'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { companyToRow, contactToRow, safeJSON } from '../format'
 import { diceCoefficient, levenshtein } from '../lib/helpers'
 
@@ -22,10 +21,12 @@ export interface DupesParams {
 }
 
 export async function findDupes(
-  db: DB,
+  db: CrmDb,
   _config: unknown,
   p: Record<string, unknown>,
 ): Promise<{ results: DupeResult[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as DupesParams
   const threshold = Number(opts.threshold)
   let results: DupeResult[] = []

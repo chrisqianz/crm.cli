@@ -1,9 +1,8 @@
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from './config'
-import type { DB } from './db'
 import type { Company, Contact, Deal, Task } from './db/schema-sqlite'
-import * as schema from './db/schema-sqlite'
+import type { CrmDb } from './db/seam'
 import { safeJSON } from './format.ts'
 import { ServiceError } from './lib/errors'
 import {
@@ -55,10 +54,12 @@ function nameCandidates<T extends { id: string }>(
 }
 
 export async function resolveContact(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
   config?: CRMConfig,
 ): Promise<Contact | null> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   // By ID
   if (ref.startsWith('ct_')) {
@@ -171,10 +172,12 @@ export async function resolveContact(
 }
 
 export async function resolveCompany(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
   config?: CRMConfig,
 ): Promise<Company | null> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   // By ID
   if (ref.startsWith('co_')) {
@@ -233,9 +236,11 @@ export async function resolveCompany(
 }
 
 export async function resolveDeal(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
 ): Promise<Deal | null> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   if (ref.startsWith('dl_')) {
     const results = await db
@@ -254,9 +259,11 @@ export async function resolveDeal(
 }
 
 export async function resolveTask(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
 ): Promise<Task | null> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   if (ref.startsWith('tk_')) {
     const results = await db
@@ -275,7 +282,7 @@ export async function resolveTask(
 }
 
 export async function resolveEntity(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
   config?: CRMConfig,
 ): Promise<{ type: string; entity: Contact | Company | Deal } | null> {
@@ -302,9 +309,11 @@ export async function resolveEntity(
 }
 
 export async function resolveCompanyForLink(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
 ): Promise<Company | null> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   // Try by ID
   if (ref.startsWith('co_')) {

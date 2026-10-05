@@ -9,9 +9,8 @@
 import { and, eq, sql } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
 import { removeSearchIndex, upsertSearchIndex } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { applyFilter, parseFilter } from '../filter'
 import { contactToRow, safeJSON } from '../format'
 import { runHook } from '../hooks'
@@ -56,10 +55,12 @@ export interface ContactAddParams {
 }
 
 export async function contactAdd(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const opts = p as ContactAddParams
   opts.name = (opts.name ?? '').trim()
   opts.email = (opts.email ?? []).map((e) => e.trim())
@@ -192,10 +193,12 @@ export interface ContactListParams {
 }
 
 export async function contactList(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as ContactListParams
   const tag = opts.tag
   const company = opts.company
@@ -292,7 +295,7 @@ export async function contactList(
 }
 
 export async function contactShow(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ detail: Record<string, unknown> }> {
@@ -327,10 +330,12 @@ export interface ContactEditParams {
 }
 
 export async function contactEdit(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const opts = p as ContactEditParams
   if (opts.name) {
@@ -549,10 +554,12 @@ export async function contactEdit(
 }
 
 export async function contactRm(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<Record<string, never>> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const force = p.force as boolean | undefined
   const c = await resolveContact(db, ref, config)
@@ -588,10 +595,12 @@ export async function contactRm(
 }
 
 export async function contactMerge(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const id1 = (p.id1 as string) ?? ''
   const id2 = (p.id2 as string) ?? ''
   const c1 = await resolveContact(db, id1, config),
@@ -694,7 +703,7 @@ export async function contactMerge(
 }
 
 export async function contactResolve(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string; name: string }> {

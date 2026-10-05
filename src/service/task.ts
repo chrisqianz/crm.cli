@@ -7,8 +7,7 @@
 import { eq } from 'drizzle-orm'
 
 import type { CRMConfig } from '../config'
-import type { DB } from '../db'
-import * as schema from '../db/schema-sqlite'
+import type { CrmDb } from '../db/seam'
 import { taskToRow } from '../format'
 import { ServiceError } from '../lib/errors'
 import { confirmOrThrow, makeId, now } from '../lib/helpers'
@@ -58,10 +57,12 @@ function localDate(iso: string): string {
 }
 
 export async function taskAdd(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const opts = p as TaskAddParams
   opts.title = (opts.title ?? '').trim()
   if (!opts.title) {
@@ -123,10 +124,12 @@ export interface TaskListParams {
 }
 
 export async function taskList(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ rows: Record<string, unknown>[] }> {
+  const schema = db.$crm.schema
+
   const opts = p as TaskListParams
   let rows = (await db.select().from(schema.tasks)).map((t) => taskToRow(t))
   const status = (opts.status ?? '').trim().toLowerCase()
@@ -199,10 +202,12 @@ export async function taskList(
 }
 
 export async function taskDone(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string; status: string }> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const t = await resolveTask(db, ref.trim())
   if (!t) {
@@ -222,7 +227,7 @@ export async function taskDone(
 }
 
 export async function taskShow(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ detail: Record<string, unknown> }> {
@@ -246,10 +251,12 @@ export async function taskShow(
 }
 
 export async function taskRm(
-  db: DB,
+  db: CrmDb,
   _config: CRMConfig,
   p: Record<string, unknown>,
 ): Promise<{ id: string }> {
+  const schema = db.$crm.schema
+
   const ref = (p.ref as string) ?? ''
   const force = p.force as boolean | undefined
   const t = await resolveTask(db, ref.trim())

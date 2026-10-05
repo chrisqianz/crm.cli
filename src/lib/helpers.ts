@@ -2,10 +2,8 @@ import { eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 import { type CRMConfig, loadConfig } from '../config'
-import type { DB } from '../db'
 import { openDB, upsertSearchIndex } from '../db'
 import type { Company, Contact, Deal } from '../db/schema-sqlite'
-import * as schema from '../db/schema-sqlite'
 import type { CrmDb } from '../db/seam'
 import { companyToRow, contactToRow, dealToRow, safeJSON } from '../format'
 import { formatPhone, tryNormalizePhone } from '../normalize'
@@ -169,9 +167,11 @@ export function parseKV(arr: string[]): Record<string, unknown> {
 }
 
 export async function getOrCreateCompanyId(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
 ): Promise<string> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   const co = await resolveCompanyForLink(db, ref)
   if (co) {
@@ -194,10 +194,12 @@ export async function getOrCreateCompanyId(
 }
 
 export async function getOrCreateContactId(
-  db: DB,
+  db: CrmDb,
   rawRef: string,
   config: CRMConfig,
 ): Promise<string> {
+  const schema = db.$crm.schema
+
   const ref = rawRef.trim()
   const ct = await resolveContact(db, ref, config)
   if (ct) {
@@ -240,10 +242,12 @@ export function validateEmail(email: string): void {
 }
 
 export async function checkDupeEmail(
-  db: DB,
+  db: CrmDb,
   email: string,
   excludeId?: string,
 ) {
+  const schema = db.$crm.schema
+
   const all = await db.select().from(schema.contacts)
   for (const c of all) {
     if (excludeId && c.id === excludeId) {
@@ -260,11 +264,13 @@ export async function checkDupeEmail(
 }
 
 export async function checkDupePhone(
-  db: DB,
+  db: CrmDb,
   phone: string,
   table: string,
   excludeId?: string,
 ) {
+  const schema = db.$crm.schema
+
   const all =
     table === 'contacts'
       ? await db.select().from(schema.contacts)
@@ -284,10 +290,12 @@ export async function checkDupePhone(
 }
 
 export async function checkDupeWebsite(
-  db: DB,
+  db: CrmDb,
   website: string,
   excludeId?: string,
 ) {
+  const schema = db.$crm.schema
+
   const all = await db.select().from(schema.companies)
   for (const co of all) {
     if (excludeId && co.id === excludeId) {
@@ -304,11 +312,13 @@ export async function checkDupeWebsite(
 }
 
 export async function checkDupeSocial(
-  db: DB,
+  db: CrmDb,
   platform: string,
   handle: string,
   excludeId?: string,
 ) {
+  const schema = db.$crm.schema
+
   const col = platform as 'linkedin' | 'x' | 'bluesky' | 'telegram'
   const existing = await db
     .select()
@@ -426,10 +436,12 @@ export function buildDealSearch(d: DealSearchSource): string {
 }
 
 export async function contactDetail(
-  db: DB,
+  db: CrmDb,
   c: Contact,
   config: CRMConfig,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const row = contactToRow(c)
   // P3: version/actor so clients can CAS the next write
   row.version = c.version
@@ -455,10 +467,12 @@ export async function contactDetail(
 }
 
 export async function companyDetail(
-  db: DB,
+  db: CrmDb,
   co: Company,
   config: CRMConfig,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const row = companyToRow(co)
   row.version = co.version
   row.updated_by = co.updated_by
@@ -487,9 +501,11 @@ export async function companyDetail(
 }
 
 export async function dealDetail(
-  db: DB,
+  db: CrmDb,
   d: Deal,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const row = dealToRow(d)
   row.version = d.version
   row.updated_by = d.updated_by

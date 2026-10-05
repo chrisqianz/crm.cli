@@ -26,8 +26,8 @@ import { and, eq, sql } from 'drizzle-orm'
 import { ulid } from 'ulid'
 
 import { type CRMConfig, loadConfig } from './config'
-import { type DB, openDB, removeSearchIndex } from './db'
-import * as schema from './db/schema-sqlite'
+import { openDB, removeSearchIndex } from './db'
+import type { CrmDb } from './db/seam'
 import { safeJSON } from './format'
 import {
   buildActivityJSON,
@@ -186,7 +186,7 @@ const KNOWN_REPORTS = new Set([
 // ── Request handler ──
 
 async function handleRequest(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   stages: string[],
   req: { op: string; path: string; data?: string },
@@ -215,7 +215,7 @@ async function handleRequest(
 // Computes actual file size via handleRead — without this, FUSE reports
 // st_size=65536 and the NFS/FUSE client zero-pads reads to that size.
 async function handleGetattr(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: string,
   stages: string[],
@@ -231,7 +231,7 @@ async function handleGetattr(
 }
 
 async function _handleGetattr(
-  db: DB,
+  db: CrmDb,
   p: string,
   stages: string[],
 ): Promise<Record<string, unknown>> {
@@ -358,10 +358,12 @@ async function _handleGetattr(
 }
 
 async function entityExists(
-  db: DB,
+  db: CrmDb,
   entityDir: string,
   id: string,
 ): Promise<boolean> {
+  const schema = db.$crm.schema
+
   // Check entity existence by querying the specific table
   switch (entityDir) {
     case 'contacts': {
@@ -397,7 +399,9 @@ async function entityExists(
   }
 }
 
-async function tagExists(db: DB, tag: string): Promise<boolean> {
+async function tagExists(db: CrmDb, tag: string): Promise<boolean> {
+  const schema = db.$crm.schema
+
   const contacts = await db
     .select({ tags: schema.contacts.tags })
     .from(schema.contacts)
@@ -426,7 +430,9 @@ async function tagExists(db: DB, tag: string): Promise<boolean> {
   return false
 }
 
-async function companySlugExists(db: DB, slug: string): Promise<boolean> {
+async function companySlugExists(db: CrmDb, slug: string): Promise<boolean> {
+  const schema = db.$crm.schema
+
   const allCompanies = await db.select().from(schema.companies)
   const contacts = await db
     .select({ companies: schema.contacts.companies })
@@ -444,11 +450,13 @@ async function companySlugExists(db: DB, slug: string): Promise<boolean> {
 }
 
 async function byIndexExists(
-  db: DB,
+  db: CrmDb,
   dir: string,
   byDir: string,
   val: string,
 ): Promise<boolean> {
+  const schema = db.$crm.schema
+
   if (dir === 'contacts') {
     if (byDir === '_by-email') {
       const all = await db.select().from(schema.contacts)
@@ -503,10 +511,12 @@ async function byIndexExists(
 // ── readdir ──
 
 async function handleReaddir(
-  db: DB,
+  db: CrmDb,
   p: string,
   stages: string[],
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   if (p === '') {
     return {
       entries: [
@@ -736,11 +746,13 @@ async function handleReaddir(
 // ── read ──
 
 async function handleRead(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: string,
   stages: string[],
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   // llm.txt — agent instructions
   if (p === 'llm.txt') {
     return { data: LLM_TXT }
@@ -847,10 +859,12 @@ async function handleRead(
 }
 
 async function readContactPath(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   sub: string,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   // _by-email/<email>.json
   if (sub.startsWith('_by-email/')) {
     const email = stripJsonExt(sub.slice('_by-email/'.length))
@@ -923,9 +937,11 @@ async function readContactPath(
 }
 
 async function readCompanyPath(
-  db: DB,
+  db: CrmDb,
   sub: string,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   if (sub.startsWith('_by-website/')) {
     const website = stripJsonExt(sub.slice('_by-website/'.length))
     const all = await db.select().from(schema.companies)
@@ -961,9 +977,11 @@ async function readCompanyPath(
 }
 
 async function readDealPath(
-  db: DB,
+  db: CrmDb,
   sub: string,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   // _by-stage/<stage>/<file>.json
   if (sub.startsWith('_by-stage/')) {
     const rest = sub.slice('_by-stage/'.length)
@@ -998,9 +1016,11 @@ async function readDealPath(
 }
 
 async function readActivityPath(
-  db: DB,
+  db: CrmDb,
   sub: string,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const id = extractId(sub)
   if (id) {
     const results = await db
@@ -1018,9 +1038,11 @@ async function readActivityPath(
 // ── search ──
 
 async function handleSearch(
-  db: DB,
+  db: CrmDb,
   query: string,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const contacts = await db.select().from(schema.contacts)
   const companies = await db.select().from(schema.companies)
   const deals = await db.select().from(schema.deals)
@@ -1057,7 +1079,7 @@ async function handleSearch(
 // ── write ──
 
 async function handleWrite(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   p: string,
   rawData: string,
@@ -1103,7 +1125,7 @@ async function handleWrite(
  * from the document filename.
  */
 async function auditedFuseWrite(
-  db: DB,
+  db: CrmDb,
   entityType: string,
   p: string,
   write: () => Promise<Record<string, unknown>>,
@@ -1138,11 +1160,13 @@ async function auditedFuseWrite(
 }
 
 async function writeContact(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   sub: string,
   data: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   // Validate fields
   const customFieldKeys: string[] = []
   for (const key of Object.keys(data)) {
@@ -1313,11 +1337,13 @@ async function writeContact(
 }
 
 async function writeCompany(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   sub: string,
   data: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   const customFieldKeys: string[] = []
   for (const key of Object.keys(data)) {
     if (!COMPANY_WRITE_FIELDS.has(key)) {
@@ -1431,11 +1457,13 @@ async function writeCompany(
 }
 
 async function writeDeal(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   sub: string,
   data: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   for (const key of Object.keys(data)) {
     if (!DEAL_WRITE_FIELDS.has(key)) {
       return { error: 'EINVAL', msg: `unknown field: ${key}` }
@@ -1553,11 +1581,13 @@ async function writeDeal(
 }
 
 async function writeActivity(
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   _sub: string,
   data: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   for (const key of Object.keys(data)) {
     if (!ACTIVITY_WRITE_FIELDS.has(key)) {
       return { error: 'EINVAL', msg: `unknown field: ${key}` }
@@ -1605,9 +1635,11 @@ async function writeActivity(
 // ── unlink ──
 
 async function handleUnlink(
-  db: DB,
+  db: CrmDb,
   p: string,
 ): Promise<Record<string, unknown>> {
+  const schema = db.$crm.schema
+
   // Only allow delete from entity root dirs, not from _by-* indexes
   if (
     p.startsWith('contacts/_by-') ||
@@ -1749,7 +1781,7 @@ export async function startDaemon(daemonArgs: string[]) {
 
 async function processLine(
   conn: Socket,
-  db: DB,
+  db: CrmDb,
   config: CRMConfig,
   stages: string[],
   line: string,
