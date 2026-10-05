@@ -1,11 +1,12 @@
 # Enterprise Mode — Design Decisions
 
-> **Alignment note (2026-10-05):** `spec/alignment.md` is now the
-> construction baseline where the two disagree — in particular the
-> centralized database is **PostgreSQL** (not SQLite) and the
-> organization/tenant model is **in scope**. The identity-model decision
-> here (no OIDC; local accounts + LDAP) stands. See alignment §2 for the
-> full supersession list.
+> **Alignment note (2026-10-06):** `spec/alignment.md` is now the
+> construction baseline where the two disagree. The product is a
+> **centralized platform** (PostgreSQL 16+ at the center; SQLite is a
+> dev/offline/FUSE-cache convenience, not the core) with the organization
+> model in scope. The identity-model decision here (no OIDC; local
+> accounts + LDAP direct) stands. See alignment §2/§5 for the full
+> decision and deviation list.
 
 This spec covers the enterprise adaptation of crm.cli: centralized deployment,
 authentication, multi-user access, audit, and the remote service layer. It

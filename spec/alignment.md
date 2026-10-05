@@ -1,242 +1,179 @@
-# Alignment: mysuggest.md Baseline vs. sh
+# Alignment: mysuggest.md Baseline — Construction Baseline
 
-Status: **superseding spec** for the clauses listed in §2. Written after the
-owner review of `spec/mysuggest.md` (v1.0, the reference baseline) against the
-shipped v0.4.0 implementation. Where this document and `enterprise.md`
-disagree, this document wins.
+Status: **superseding spec** where it and `enterprise.md` disagree. Written
+after the owner review of `spec/mysuggest.md` (v1.0, the reference
+baseline) and the product re-positioning of 2026-10-06.
 
-## 1. Owner decisions (2026-10-05)
+## 1. Product positioning (owner, 2026-10-06)
 
-| # | Decision | Consequence |
-|---|----------|-------------|
-| D1 | The centralized backend **must run on an enterprise-grade database — PostgreSQL**. SQLite is a single-machine database only. | `crm serve` gains a PostgreSQL backend behind a repository abstraction. SQLite is retained for local mode, standalone single-file use, and the FUSE local cache. |
-| D2 | The current identity model **stays**: local self-hosted accounts + LDAP/AD direct bind, long-lived hashed tokens. No OIDC, no OAuth2/PKCE browser login. | `enterprise.md` L88 (OIDC rejection) stands. `mysuggest.md` §2/§33–37 (OIDC bus, PKCE CLI login, HttpOnly-cookie web SSO) is **not** adopted. Web login (when the Web CRM lands) uses username/password against the same identity service. |
-| D3 | Organization model: **to be implemented per the baseline MVP** (`organizations` + `memberships` from day one, `organization_id` on every business entity, tenant filtering on every query). *(Owner answer pending final confirmation — this spec assumes yes.)* | New schema + actor context plumbing + tenant isolation. See P-AL3. |
+> The product is a **centralized CRM platform with a TUI as its primary
+> human interface, built for humans AND AI agents working together**.
 
-Notes:
+- The **central database is the design starting point**, not a migration
+  target. "Local machine" is a development/offline convenience, never the
+  axis the product is designed around.
+- Everything else (LDAP, email, audit, org model, agents, Web, FUSE)
+  exists in service of that central platform.
+- **Sequence rule: features first, optimization last.** No phase ships
+  pure refactoring with zero user-visible capability.
 
-- "enterprise-grade database like SQL Server" was cited as the *class* of
-  requirement; **PostgreSQL 16+ is the target** (the baseline's stack, and
-  drizzle/pgvector/FTS/RLS all assume it). SQL Server is explicitly **not**
-  a supported target; if a deployment mandates it, that is a separate
-  tracked effort, not an alignment item.
-- Already compliant with the baseline (no work): argon2id password hashing
-  (`mysuggest.md` §61), hashed token storage (§60), ULID-style IDs (§101),
-  duplicate detection/merge (§104), audit on writes (§152/8).
+## 2. Owner decisions
 
-## 2. Superseded clauses
+| # | Decision |
+|---|----------|
+| D1 | The central backend runs on **PostgreSQL 16+** (enterprise-grade). SQLite is a single-machine database — dev tooling, offline mode, FUSE cache — **not** the product's core. ("SQL Server-like" was the class of requirement; the baseline stack targets PostgreSQL. SQL Server is not a supported target.) |
+| D2 | Identity model **as currently built**: local self-hosted accounts + LDAP/AD direct bind, hashed long-lived tokens. **No OIDC, no OAuth2/PKCE browser login** (baseline §2/§33–37 not adopted). Web login, when it lands, is username/password against the same identity service with HttpOnly cookies. |
+| D3 | **Organization model per the baseline MVP**: `organizations` + `memberships` from day one, `organization_id` on every business entity, tenant filtering on every query, `teams` alongside. |
 
-- `enterprise.md` L46 — "Multi-tenant … is explicitly out of scope" →
-  superseded by D3.
-- `enterprise.md` DB layer (serve on SQLite/libSQL + litestream) →
-  superseded by D1 for the **centralized** deployment. Litestream remains
-  valid for the standalone single-file server.
-- `mysuggest.md` §2/§33–37 OIDC/PKCE architecture → not adopted (D2).
-- `mysuggest.md` §69 (Redis as session/rate-limit/cache store) → v1
-  deviates, see §5.
+Already compliant with the baseline (no work): argon2id password hashing
+(§61), hashed token storage, ULID IDs (§101), duplicate detection/merge
+(§104), audit on every write (§152/8), rate limiting + account lockout.
 
 ## 3. Target architecture
 
 ```text
-                     ┌────────────────────────┐
-   Web (console) ───▶│        crm serve        │
-   CLI (remote) ────▶│  auth → actor context   │
-   MCP (later) ─────▶│  → RBAC + tenant filter │
-   n8n (REST) ──────▶│  → service layer        │
-                     │  → repositories         │
-                     └────────────┬───────────┘
+                    ┌─────────────────────────┐
+   TUI (CLI)  ────▶│        crm serve         │
+   Web CRM    ────▶│  auth → actor context   │
+   Agents     ────▶│  → RBAC + tenant filter │
+   (MCP/REST) ────▶│  → service layer        │
+   FUSE cache ────▶│  → repositories         │
+                    └─────────────┬───────────┘
+                                  ▼
+                       PostgreSQL 16+ (the center)
                                   │
-                     ┌────────────┴───────────┐
-                     ▼                        ▼
-              PostgreSQL 16+             (v1 only: SQLite
-              central data               single-file server
-                                         for standalone use)
+                    dev/offline: single SQLite file
 ```
 
-Non-negotiable properties (baseline §152):
+Non-negotiable properties (baseline §152, applied):
 
-1. **Client ≠ database** — no client (CLI, MCP, n8n, Web) ever touches the
-   central database directly.
-2. **Every query is tenant-scoped** once D3 lands — no query path may read
-   or write a business row without its `organization_id` in the WHERE.
-3. **Every write is audited** with the full actor tuple.
-4. SQLite survives as: local mode (`--db`), standalone single-machine
-   server, and the FUSE local cache (§39–41). It is **not** the central
-   store.
+1. **Client ≠ database** — no client touches the central DB directly.
+2. **Every query tenant-scoped** — no business row reachable without its
+   `organization_id` in the WHERE.
+3. **Every write audited** with the full actor tuple.
+4. **Agent ≠ human** — agents have their own identities, scoped keys,
+   and audit trail; never trust agent-declared identity.
 
-### 3.1 Dual-driver repository layer
+Design notes:
 
-The service layer today calls drizzle over the libSQL client directly.
-P-AL1 introduces:
+- **Repository layer**: service layer speaks domain-level repositories;
+  two implementations (Postgres primary, SQLite for dev/offline) over one
+  schema source of truth, kept in lockstep by a CI parity check. Tests
+  run against Postgres as the primary matrix.
+- **JSON array columns** stay JSONB on Postgres during the driver switch;
+  relationalization is a later feature phase (AL-6), not a driver blocker.
+- **Search**: FTS5 → PostgreSQL `tsvector` + GIN, same service contract.
+- **No Redis in v1** — Postgres-backed job queue, worker loop inside
+  `serve`. Redis + separate worker process arrive with scale (AL-8).
+- **Deployment**: docker compose = `crm-serve` + `postgres` (+ optional
+  `mailpit`); `/health` (process) and `/ready` (DB reachable, LDAP
+  optional) on the admin port.
+- **Migration**: `crm migrate export` (SQLite → JSON) + existing import
+  RPC for the server side, so a standalone installation hands its data to
+  a fresh central deployment.
 
-```text
-src/service/*.ts  →  repository interfaces (domain-level)
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-     SqliteRepository (existing        PostgresRepository
-     behavior, single machine)          (central, `crm serve`)
-```
+## 4. Phases (features first, optimization last)
 
-- One schema source of truth; two drizzle schema files generated/maintained
-  in lockstep (`drizzle-schema.ts` for sqlite-core, `drizzle-schema-pg.ts`
-  for pg-core). CI check: table/column parity.
-- Search: FTS5 (sqlite) → PostgreSQL FTS `tsvector` + GIN (pg) per
-  baseline §103, same service-level contract (typed results, scores).
-- Arrays (`emails[]`, `companies[]`, `tags[]` …): stored as **JSONB on
-  PostgreSQL in P-AL2** to keep service behavior byte-identical during the
-  driver switch; relationalization (`contact_emails`, …) is its own later
-  phase (P-AL6) because it changes query shapes, not drivers.
-- Jobs/email: **no Redis in v1** (baseline deviation). Outbound email and
-  future background jobs use a Postgres-backed queue table with a
-  in-process worker loop inside `serve`. Redis becomes relevant only at
-  multi-node scale (HA phase, out of scope here).
-- Single process in v1: `crm serve` hosts RPC + console + worker loop.
-  Splitting `worker`/`mcp` into separate processes/apps happens with the
-  phases that need them (MCP, Web CRM), not before.
+Every phase: spec delta → TDD red/green → mutation check → full-suite
+gate (Postgres primary matrix).
 
-### 3.2 Connection & operations
+### AL-1 — Central PostgreSQL (foundation + core feature)
 
-- `[serve] database` config section (or `DATABASE_URL` env):
-  `postgres://…`. Absent → SQLite single-file (current behavior, unchanged).
-- Migrations: drizzle-kit managed; the server refuses to start on a schema
-  it does not recognize (no silent auto-migration of a central DB).
-- Deployment: `docker compose` stack = `crm-serve` + `postgres` (+ optional
-  `mailpit` for local mail); reverse proxy docs for TLS termination.
-  `deploy/crm.service` (systemd, SQLite) stays for the standalone case.
-- Baseline §112–113: add `GET /health` (process) and `GET /ready`
-  (database reachable, LDAP optional) to the admin port.
+`crm serve` runs the platform on PostgreSQL 16: repository layer, pg
+schema + drizzle migrations, schema-parity CI check, FTS port,
+`[serve] database` config, docker compose stack, `/health` + `/ready`,
+`crm migrate export` + import path.
 
-### 3.3 Migration from existing SQLite data
+**Acceptance**: the full enterprise test suite green against a real
+`postgres:16` container; `crm serve --db` single-file mode still works
+(dev/offline); admin console shows DB backend + readiness.
 
-Baseline §98–99: `crm migrate export` (SQLite → JSON) then import into the
-central server. The existing `crm import` RPC surface is reused for the
-server side; P-AL2 ships `crm migrate export|status` so a standalone
-installation can hand its data to a fresh central deployment.
+### AL-2 — Organization model
 
-## 4. Phases
+`organizations`, `memberships`, `teams`/`team_members`; owner's
+bootstrap creates the first organization; admin creates orgs, assigns
+members with per-membership roles; `organization_id` on every business
+entity; tenant filter enforced in repositories; audit carries
+organization_id; console org/membership management; migration backfills a
+default org for existing rows.
 
-Each phase follows repo culture: spec delta → TDD red/green → mutation
-check → full-suite gate (dual-driver matrix where applicable).
+**Acceptance**: two organizations on one server; a writer in org A cannot
+read org B's contacts by id or list; single-org deployment migrates
+without data loss.
 
-### P-AL1 — Repository abstraction (baseline Phase 0)
+### AL-3 — Agent identity + MCP (AI collaboration)
 
-Extract repository interfaces from the service layer; SQLite path stays the
-only driver, behavior unchanged. Repository interfaces are designed with
-the actor/tenant context from the start (organization_id parameter shape)
-so P-AL3 does not reshape them.
+`agents` + `api_keys` (prefix + hash, scopes, expiry, rotation,
+`crm token create|list|revoke`); agent actor type in audit; **`crm-mcp`**
+server exposing the CRM over MCP with server-side authorization
+(§50–52, §127); agent skills docs updated for token usage.
 
-Acceptance: full suite green on SQLite; zero behavior change; service files
-no longer import the db client directly.
+**Acceptance**: an agent token scoped to `contact:read` cannot create;
+n8n drives the CRM via REST and via MCP; every agent write lands in audit
+as `actor_type=agent`.
 
-### P-AL2 — PostgreSQL backend
+### AL-4 — Web CRM
 
-`PostgresRepository`, pg schema + migrations, FTS port, `[serve] database`,
-schema-parity CI check, `crm migrate export`, docker compose with
-postgres. All service tests run against **both** drivers.
+Full web client (React) alongside the console: daily loop of contacts,
+companies, deals, activities, search, reports. Web login =
+username/password + HttpOnly/Secure/SameSite cookies (no OIDC, D2).
+Profile page: sessions, API keys, organizations (§118).
 
-Acceptance: the full enterprise suite green on a real `postgres:16`
-container; `crm serve` on Postgres passes every remote-mode scenario test;
-standalone SQLite mode byte-identical (regression gate); `/health` +
-`/ready` live.
+**Acceptance**: a salesperson completes their full daily workflow from
+the browser; console remains the admin surface.
 
-### P-AL3 — Organization model *(pending D3 confirmation)*
+### AL-5 — Session hardening + MFA
 
-`organizations`, `memberships` (role per membership), owner picks org at
-bootstrap / admin assigns; every business entity gains `organization_id`;
-actor context resolves org; tenant filter enforced in repositories (not in
-commands); console org + membership management; migration backfills a
-default org for existing rows. Baseline §18–20, §66; teams
-(`teams`/`team_members`) included in this phase (MVP-adjacent, needed by
-object-level scope later).
+Session metadata (device, ip, user-agent, expiry, revocation,
+force-logout per device, login history); TOTP MFA with hashed one-time
+recovery codes; password policy for local accounts.
 
-Acceptance: two organizations in one server; a writer in org A cannot read
-org B contacts by id or list; audit carries organization_id; existing
-single-org deployment migrates without data loss.
+**Acceptance**: revoking one session kills only that device; MFA
+challenge on login; recovery code works exactly once.
 
-### P-AL4 — Agent identity + MCP
-
-`agents` table; `crm token create|list|revoke` (api_keys: prefix + hash,
-scopes, expiry, rotation — baseline §30–32, §128); agent actor type in
-audit; `crm-mcp` server (MCP tool surface over the same service layer with
-server-side authorization, baseline §50–52, §127 — agent-declared identity
-is never trusted).
-
-Acceptance: an agent token with `contact:read` only cannot create; n8n can
-drive the CRM via REST and via MCP; every agent write lands in audit with
-`actor_type=agent`.
-
-### P-AL5 — Session hardening + MFA
-
-Token → session metadata (device name, ip, user_agent, revocation,
-last_seen) per baseline §62; admin "force logout" per session (§117);
-TOTP MFA (baseline §64, second phase there — we take it here) with hashed
-recovery codes. Refresh-token rotation stays out (long-lived tokens with
-expiry + rotation commands cover the CLI; baseline §63 makes rotation
-conditional on refresh-token use).
-
-Acceptance: revoking one session kills only that device; MFA challenge on
-login with a TOTP app; recovery codes work exactly once.
-
-### P-AL6 — Data-model hardening
+### AL-6 — Data-model hardening
 
 JSON arrays → relational tables (`contact_emails`, `contact_phones`,
-`contact_companies`, `tags`/`contact_tags`, `deal_contacts`, …) with
-dual-driver migrations and the baseline §100 mapping; soft delete
-(`deleted_at`) + admin hard delete (§73); optimistic locking (`version`)
-(§107); `Idempotency-Key` on create endpoints (§108).
+`contact_companies`, `tags`, `deal_contacts`, …) with dual-driver
+migrations (baseline §100 mapping); soft delete + admin hard delete
+(§73); optimistic locking via `version` (§107); `Idempotency-Key` on
+create endpoints (§108).
 
-Acceptance: import/export round-trip identical before/after; concurrent
-update loses-wound (409-class error), not silently overwritten; duplicate
-POST with same idempotency key creates one row.
+**Acceptance**: export/import round-trip identical; concurrent update
+conflicts loudly (not silent overwrite); duplicate POST with the same
+idempotency key creates one row.
 
-### P-AL7 — Web CRM
+### AL-7 — FUSE remote client
 
-Full web client (React) alongside the console; web login is
-username/password against the identity service with HttpOnly/Secure/SameSite
-cookies (baseline §34, minus OIDC per D2); profile page with sessions,
-API keys, orgs (baseline §118).
+FUSE → local SQLite cache → server API, online-only first (baseline §41
+phase 1). The filesystem stays "the universal API"; it is no longer the
+database.
 
-Acceptance: a salesperson runs their full daily loop (contacts, deals,
-activities, search, reports) from the browser; console remains the admin
-surface.
+**Acceptance**: a fresh machine mounts a remote CRM's contacts/deals via
+FUSE with no local business data; CLI and FUSE agree on content.
 
-### P-AL8 — FUSE remote client (baseline Phase 9)
+### AL-8 — Optimization (not committed, order as needed)
 
-FUSE → local SQLite cache → server API, online-only first
-(baseline §41 phase 1); filesystem stays "the universal API", but no
-longer equal to the database.
+Redis + separate worker process; pgvector semantic search (§49); MinIO/S3
+attachments; Prometheus metrics (§111); Postgres RLS defense-in-depth
+(§67); PgBouncer; HA/K8s (§97 phase 3); GDPR export/erasure;
+field-level encryption; email mailbox connector (§55–58); data
+retention policy (§74).
 
-Acceptance: a fresh machine mounts a remote CRM's contacts/deals via FUSE
-with no local business data; CLI and FUSE agree on content.
+## 5. Ratified deviations from mysuggest.md
 
-### P-AL9 — Scale & polish (as needed, not committed)
-
-Redis at multi-node, worker process split, pgvector semantic search
-(baseline §49), MinIO/S3 attachments, Prometheus metrics (§111), RLS
-defense-in-depth (§67), PgBouncer, HA/K8s (baseline §97 phase 3),
-GDPR export/erasure, field-level encryption, email inbox connector
-(§55–58, baseline phase 2+).
-
-## 5. Explicit deviations from mysuggest.md (ratified)
-
-1. **No OIDC / OAuth2-PKCE CLI login** — D2, owner decision.
-2. **No Redis in v1** — Postgres-backed job queue, in-process worker;
-   single-node deployment is the v1 target.
-3. **JSONB before relational tables** — driver switch first, schema
-   evolution after (P-AL2 vs P-AL6).
+1. **No OIDC / OAuth2-PKCE** — D2.
+2. **No Redis in v1** — Postgres job queue, in-process worker; single
+   process until AL-8 needs more.
+3. **JSONB before relational tables** — driver switch first (AL-1),
+   schema evolution after (AL-6).
 4. **No refresh-token rotation** — hashed long-lived tokens with expiry,
-   naming, scoping, and admin/CLI revocation.
-5. **Single process** until MCP/Web CRM need their own.
-6. **PostgreSQL, not SQL Server** — see §1 notes.
-7. **Console before Web CRM** — the admin console (shipped) is the web
-   surface until P-AL7.
+   naming, scoping, revocation.
+5. **PostgreSQL, not SQL Server** — see D1.
+6. **Console precedes full Web CRM** — the shipped admin console is the
+   web admin surface until AL-4.
 
 ## 6. Open items
 
-- D3 final confirmation (org model yes/no, and whether teams ride along).
-- P-AL2 needs a real `postgres:16` in the test environment (docker) —
-  confirm the host runs docker for the test matrix.
-- `mysuggest.md` §135 second-version items (agents/api_keys, security
-  events, pgvector) are covered by P-AL4/P-AL5/P-AL9 above; confirm
-  ordering if priorities differ.
+- None blocking AL-1. Docker is available on the dev host
+  (verified 2026-10-06, `postgres:16` pulls clean) for the test matrix.
