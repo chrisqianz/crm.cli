@@ -696,6 +696,54 @@ plus `src/server/handlers.ts` where it touches `db.` directly.
 
 **Commit:** `migrate: export sqlite → json consumable by central import`
 
+**As built** (`37f437c`, parent `c7f1391`; `src/commands/migrate.ts` new,
+registered in `src/cli.ts`, `test/enterprise/postgres-migrate.test.ts` 6
+tests green — 4 shape/CLI + 2 central-Postgres round-trips):
+
+- Read path bypasses the services on purpose: five literal `SELECT * FROM
+  … ORDER BY created_at, id` constants through `db.$crm.raw`, because
+  `task.list` filters to `open` by default and the other lists apply owner
+  scoping — a migration export must not inherit read filters.
+- Links are stored as ids (`deals.contacts` JSON array, `activities.contacts`,
+  scalar `tasks.contact/deal`, `*.company`), and the destination mints new
+  ids, so the export translates every id back to a name through
+  `contactName`/`companyName`/`dealTitle` maps. `resolve.ts` accepts a name
+  on the load side (ambiguity ⇒ CONFLICT exit 3), which is what makes the
+  export id-free and re-importable.
+- Bucket key names are exactly what the loader reads, not what the row
+  columns are called: `contact`/`company`/`expectedClose`/`probability`/`tag`/
+  `set` for `deal.add`, `due` for `task.add`, `at` for `activity.log`,
+  plural arrays for `import.companies`/`import.contacts`. Numbers are
+  emitted as strings; `custom_fields` is flattened onto the record, which is
+  loss-free because `import*` sweeps unknown top-level keys back into
+  `custom_fields`.
+- `meta` carries `source`, `counts` (computed from the emitted buckets, not
+  the source row counts — a dropped bucket cannot hide behind the summary),
+  `not_preserved`, and `load` (which RPC replays each bucket). The three
+  loss classes are printed in the human summary: `created_at`/`updated_at`
+  and `owner` on contacts/companies/deals, `status` and `created_at` on
+  tasks. Activity timestamps do survive (`activity.log` accepts `at`).
+- Output split: `--out file` writes the JSON to disk (parent dirs created)
+  and the human summary goes to **stdout**; without `--out`, stdout is pure
+  JSON and the summary goes to **stderr**. `runOK()` in the harness returns
+  stdout only, so this split is what makes the contract testable.
+- Guard order in `assertLocalSqlite()`: `isRemote()` → `resolveBackend() !==
+  'sqlite'` → `requireLocalHost()`. The Postgres check runs before the
+  localhost check, otherwise a Postgres config with no `database.path`
+  would die as NEEDS_DB and never say *why*. The message names both
+  dialects.
+- Three assertions in my own RED test were wrong, not the code: `websites`
+  is stored normalized (`normalizeWebsite` strips the scheme, so
+  `zephyr.example`), `ImportResult.errors` is a count rather than a message
+  array, and the two central-PG cases need a 30s per-test timeout.
+- Mutation evidence (each restored from `cp` backup, sha verified after the
+  run): dropping the tasks bucket → 4 pass/2 fail; leaving deal links as
+  ids → 4/2; not flattening `custom_fields` → 4/2; removing the backend
+  guard → 5/1.
+- Gate at commit: `bun test` 868 pass / 6 fail (the 6 are the known
+  `test/email.test.ts` sandbox baseline), 3691 expects, 874 tests / 76
+  files, 731s; `bun run check-types` clean; `bun run lint` clean.
+
 ---
 
 ### Task AL-1-8: deployment — docker compose + docs
