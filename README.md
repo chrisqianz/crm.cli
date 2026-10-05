@@ -403,12 +403,48 @@ login_user_rate_per_minute = 15  # …and per IP+username pair (0 = unlimited)
 default_role = "none"            # role for a directory user in no mapped group
 ```
 
-`GET /healthz` on the same port answers `{"ok":true}` for load balancers.
+`GET /healthz` on the TLS port answers `{"ok":true}` for load balancers.
+`GET /health` and `GET /ready` live on the admin console's HTTP port and
+report the database backend too — `/ready` is the one a healthcheck should
+use, because it fails while the schema is still being created.
 
 ### Deployment
 
-- **Docker:** `docker build -t crm .` then `docker run -p 8443:8443 -v crm-data:/data crm`
-- **systemd:** see [`deploy/crm.service`](deploy/crm.service)
+A deployed CRM has a **Postgres** database in front of it. That is the
+architecture choice, not a preference: the server answers many clients at once,
+and a database it copies into a file on its own host cannot do that. SQLite is
+still what runs on a laptop — local mode, offline work, the FUSE mount — and
+`crm serve` will tell you plainly if you point it at a file and a fleet.
+
+- **Docker Compose (recommended):** [`docker-compose.yml`](docker-compose.yml)
+  brings up `postgres:16` plus the server, and waits for the database to be
+  *ready* rather than merely started:
+
+  ```sh
+  docker compose up -d --build
+  docker compose logs crm          # first boot prints BOOTSTRAP-CODE=...
+  crm admin bootstrap --server 127.0.0.1:8443 --code <code> \
+    --username admin --password '<at least 12 chars>'
+  open http://127.0.0.1:8580       # admin console (loopback only)
+  ```
+
+  One environment variable does the important work: `CRM_DATABASE_URL` carries
+  the connection string *and* states the backend, so the stack cannot come up
+  healthy while running the wrong database. Settings with no environment form
+  (`[serve] public_host`, `install_source`, `[pipeline]`, `[mail]`, `[ldap]`)
+  come from a `crm.toml` — the compose file shows the two lines to uncomment.
+
+- **Docker (single container, SQLite):** `docker build -t crm .` then
+  `docker run -p 8443:8443 -v crm-data:/data crm`. Fine for an evaluation or a
+  one-person install; it is the same binary, just pointed at a file.
+- **systemd:** see [`deploy/crm.service`](deploy/crm.service) — the single-node
+  path, SQLite on the host. Set `CRM_DATABASE_URL` in the environment to point
+  the same unit at Postgres instead.
+
+Back up the centre accordingly: the file-shipping replication that works for
+SQLite has no Postgres counterpart yet, so `pg_dump` on a schedule is the
+answer today, and `serve` refuses a file-replication target configured for a
+Postgres backend rather than silently doing nothing.
 
 ---
 

@@ -1,5 +1,10 @@
 # crm.cli enterprise server — systemd unit (spec/enterprise.md, P1)
 #
+# This is the SINGLE-NODE shape: one host, one process. Left at its defaults
+# it runs on a SQLite file, which makes it the right unit for a dev box, an
+# offline install, or a one-person deployment — not the shape for a team, where
+# the database is Postgres and the reference stack is docker-compose.yml.
+#
 # Install:
 #   1. Copy the project (with node_modules + dist) to /opt/crm
 #      (bun install && bun run build there).
@@ -11,6 +16,18 @@
 # The server binds 127.0.0.1 by default — put a TLS reverse proxy
 # (Caddy/nginx) in front for network access, or set host/port in
 # /opt/crm-home/.crm/config.toml under [serve].
+#
+# Running this unit against Postgres instead of a file (the deployed choice
+# once more than one person writes) is one line — uncomment in [Service]:
+#
+#   Environment=CRM_DATABASE_URL=postgres://crm:…@db.internal:5432/crm
+#
+# The URL states the backend, so there is no second flag to forget. If the
+# database is on another host, change After= to network-online.target so the
+# unit does not crash-loop while the route is still coming up, and drop
+# litestream from the picture: file replication is the SQLite answer, so
+# schedule pg_dump instead (serve refuses a replication target configured for
+# a Postgres backend rather than report a config that copies nothing).
 
 [Unit]
 Description=crm.cli enterprise server (NDJSON RPC over TLS)

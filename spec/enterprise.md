@@ -50,10 +50,23 @@ Reasoning:
    normalization, dedupe, and search all run server-side. The remote CLI is a
    transport + formatter. This keeps one source of truth for behavior.
 
-**Single tenant per deployment in v1.** One company = one server = one DB
-file. Multi-tenant (tenant_id on every query) is explicitly out of scope —
+**Single tenant per deployment in v1.** One company = one server = one
+database. Multi-tenant (tenant_id on every query) is explicitly out of scope —
 CRM write volume does not justify it, and "one instance per company" deploys
 cleanly for the target scale.
+
+**The central database is Postgres; a file is the personal form.** "One DB
+file" was true of v1 and is now the exception rather than the rule: the server
+answers many clients at once, and a database it copies into a file on its own
+host cannot scale past that host or survive a second writer. So `crm serve` in
+a deployed topology runs on **PostgreSQL 16+** (`[database] backend =
+"postgres"`, or simply `CRM_DATABASE_URL`, which states the backend as well as
+the connection string); SQLite remains for local mode, offline work, and the
+FUSE mount. Both forms are the same code — the dialect seam in
+`spec/alignment.md` AL-1 is what makes that true rather than aspirational.
+The reference stack is [`docker-compose.yml`](../docker-compose.yml): the
+database service plus the server, with the server waiting for Postgres to be
+*ready* (not merely started) before it creates schema.
 
 ## Service layer: `crm serve`
 
@@ -75,13 +88,23 @@ cleanly for the target scale.
   mapping — agents can branch on codes.
 - **Limits:** max message size, max concurrent connections per IP, idle
   timeout. NDJSON framing is bounded; the daemon parses one line per read.
-- **Health:** the daemon also answers a plain-HTTP `GET /healthz` on the TLS
-  port (protocol detection by first byte) — `{"ok": true, "version": ...,
-  "db": "ok", "wal": "ok"}`. For systemd/Docker health checks.
-- **Lifecycle:** systemd unit + Dockerfile + `crm serve --install-service`
-  helper. No auto-restart of sub-processes: the serve process *is* the whole
-  server (DB is a file; no runtime downloads — `crm find` is local
-  word-overlap scoring today).
+- **Health:** the daemon answers `GET /healthz` on the TLS port
+  (protocol detection by first byte) — `{"ok": true, "version": ...,
+  "db": "ok", "wal": "ok"}` — which is what an external load balancer can
+  reach. The admin console's HTTP port additionally answers `GET /health`
+  (backend included) and `GET /ready`, which fails while schema creation is
+  still in flight. Use `/ready` for container health checks; `/healthz` for
+  anything that cannot see the console port.
+- **Lifecycle:** [`docker-compose.yml`](../docker-compose.yml) (Postgres +
+  server) is the reference deployment; [`Dockerfile`](../Dockerfile) builds the
+  image it runs, and [`deploy/crm.service`](deploy/crm.service) covers the
+  single-node host install. Backup tooling follows the database: file
+  replication (litestream) is the SQLite answer, and `serve` refuses to start
+  with a replication target configured against a Postgres backend rather than
+  report a green config that copies nothing — a scheduled `pg_dump` is the
+  honest answer until AL-8 gives Postgres its own story. No auto-restart of
+  sub-processes: the serve process *is* the whole server (no runtime downloads
+  — `crm find` is local word-overlap scoring today).
 
 ## Authentication and identity
 

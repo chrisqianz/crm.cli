@@ -1,0 +1,120 @@
+---
+# crm.cli central server (spec/alignment.md AL-1, spec/enterprise.md)
+#
+#   docker compose up -d --build
+#   docker compose logs crm        # first boot prints BOOTSTRAP-CODE=...
+#   crm admin bootstrap --server 127.0.0.1:8443 --code <code> \
+#     --username admin --password '<at least 12 chars>'
+#   open http://127.0.0.1:8580     # admin console
+#
+# Two services: the database and the server that owns it. Postgres is the
+# centre of a deployed install — the server must be able to answer more than
+# one client at a time, and a file it copies to itself cannot. SQLite stays
+# what it always was: the zero-install local mode, and the offline/FUSE
+# mount on a workstation.
+#
+# The one line that matters is CRM_DATABASE_URL. It both supplies the
+# connection string and states the backend (src/config.ts), so there is no
+# second flag to forget — and no way for this stack to come up "healthy" while
+# quietly running the wrong database.
+#
+# Config that has no environment form — [serve] public_host / public_port /
+# install_source, [pipeline], [mail], [ldap] — has to come from a file. Drop a
+# crm.toml next to this compose file, uncomment the two marked lines below, and
+# restart. Everything the server needs to be reachable by name lives there:
+#
+#   [serve]
+#   public_host = "crm.example.com"   # what clients are told to dial
+#   public_port = 8443
+#   cert = "/etc/crm/certs/server.crt"
+#   key  = "/etc/crm/certs/server.key"
+#
+#   [mail]                            # pair with --profile mail (mailpit below)
+#   host = "mailpit"
+#   port = 1025
+#   from = "crm@example.com"
+#
+# No backup target is configured here. The file-shipping tool that works for
+# SQLite has no Postgres counterpart yet — a dump/restore story for the centre
+# is AL-8 (spec/alignment.md), and until it exists, `pg_dump` on a schedule is
+# the honest answer. Configuring a target for a Postgres backend is refused at
+# startup rather than silently doing nothing.
+#
+# The admin console is plain HTTP. It is published on the host's loopback only,
+# and the container-side bind is 0.0.0.0 purely so the mapping can reach it.
+# Put a TLS reverse proxy in front of it if it must leave the host.
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+      POSTGRES_DB: crm
+    volumes:
+      - crm-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Waiting on the container starting is not readiness: Postgres answers
+      # connections for a moment before it will serve them, and the server
+      # creates its schema at startup, so that window is a crash loop.
+      test: ['CMD-SHELL', 'pg_isready -U crm -d crm']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  crm:
+    build: .
+    restart: unless-stopped
+    # The image's default command serves the TLS RPC port only; a central
+    # server also serves the console, and /health + /ready live on it.
+    command:
+      [
+        "bun",
+        "dist/cli.js",
+        "serve",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8443",
+        "--admin-host",
+        "0.0.0.0",
+        "--admin-port",
+        "8580",
+      ]
+    environment:
+      CRM_DATABASE_URL: postgres://crm:crm@postgres:5432/crm
+      # CRM_LDAP_BIND_PASSWORD: ...   # only [ldap] needs a secret in the env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8443:8443"
+      - "127.0.0.1:8580:8580"
+    volumes:
+      # Certificates, and the local-mode file if [database] is ever switched
+      # back. Inert while CRM_DATABASE_URL is set.
+      - crm-data:/data
+      # - ./crm.toml:/data/crm.toml:ro   # + CRM_CONFIG: /data/crm.toml below
+    # environment:
+    #   CRM_CONFIG: /data/crm.toml
+
+  # --- Outbound mail -------------------------------------------------------
+  # Opt-in, like everything that sends mail on someone's behalf:
+  #   docker compose --profile mail up -d
+  # The server reaches it at mailpit:1025 on the compose network once a
+  # [mail] section names that host — nothing routes mail here by default.
+  # Its UI is on loopback at :8025 and holds every message ever accepted, so
+  # it is not published on the network.
+  mailpit:
+    profiles: ["mail"]
+    image: axllent/mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8025:8025"
+    environment:
+      MP_MAX_MESSAGES: 5000
+
+volumes:
+  crm-pgdata:
+  crm-data:
