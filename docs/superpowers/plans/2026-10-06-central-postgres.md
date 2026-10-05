@@ -764,16 +764,94 @@ tests green — 4 shape/CLI + 2 central-Postgres round-trips):
   `docker compose up` in the gate)
 
 **Steps:**
-- [ ] RED: compose test asserts (a) `docker compose config` exits 0,
+- [x] RED: compose test asserts (a) `docker compose config` exits 0,
   (b) pg service image is `postgres:16`, (c) crm service passes
   `CRM_DATABASE_URL=postgres://crm:crm@postgres:5432/crm`,
   (d) healthcheck present on pg.
-- [ ] GREEN: compose file + docs.
+- [x] GREEN: compose file + docs.
 - [ ] Manual (operator, not gate): `docker compose up` on this host,
   bootstrap, one contact add — then `down` (record in the task
   report; do not bake into the gate).
 
 **Commit:** `deploy: docker compose stack (crm-serve + postgres) + docs`
+
+**As built** (`b1f6515`, parent `e6efc03`; `docker-compose.yml` new,
+`test/enterprise/postgres-compose.test.ts` 12 tests green, `Dockerfile` /
+`README.md` / `spec/enterprise.md` / `deploy/crm.service` rewritten around
+it):
+
+- The whole database handoff is one line: `CRM_DATABASE_URL:
+  postgres://crm:crm@postgres:5432/crm`. Setting it assigns `database.url`
+  *and* `database.backend = 'postgres'` (`src/config.ts`), so there is no
+  second flag to forget and no way to come up against the wrong database.
+  The image's `ENV CRM_DB=/data/crm.db` survives as dead config —
+  `validateDatabaseConfig` accepts both being present, so switching shapes
+  never requires editing the image.
+- Gated on *readiness*, not existence: `depends_on: {condition:
+  service_healthy}` + `pg_isready -U crm -d crm` (`interval`/`timeout` 3s,
+  `retries: 20`). Postgres answers connections before it can serve them and
+  `serve` creates schema at startup; that window is a crash loop, and the
+  healthcheck is what turns it into a wait.
+- `crm` runs an explicit `command` with `--admin-host 0.0.0.0 --admin-port
+  8580` rather than the image's `CMD`, because the console is off unless
+  `--admin-port` is passed. Port mapping is asymmetric on purpose: `8443:8443`
+  (the RPC port the team dials, TLS) versus `127.0.0.1:8580:8580` — the
+  console carries admin credentials in cookies over plain HTTP, so publishing
+  it on every interface would leak them to the LAN. Same reasoning keeps the
+  mailpit UI on loopback.
+- Config file wiring is commented-in rather than default: `[serve]
+  public_host/public_port/install_source/cert/key`, `[pipeline]`, `[mail]`,
+  `[ldap]` have **no environment form at all** (the env set is `CRM_CONFIG`,
+  `CRM_DB`, `CRM_DATABASE_URL`, `CRM_FORMAT`, the two `CRM_PHONE_*`, and
+  `CRM_SMTP_PASSWORD`), so a compose-only deployment silently runs with
+  defaults for all of them. Uncommenting `./crm.toml:/data/crm.toml:ro` +
+  `CRM_CONFIG=/data/crm.toml` is the documented way in — and naming the file
+  explicitly is required anyway, since `serve` refuses `[auth]`/`[ldap]` from
+  a crm.toml it discovers by walking up from the cwd.
+- Mail is behind `profiles: ["mail"]`. The `[mail]` section reaches it as
+  `host = "mailpit"` on the compose network — written in the README, *not*
+  as `CRM_SMTP_HOST`, which does not exist and would be a config that looks
+  set and is inert.
+- Deliberately absent: any `[backup]` replication target. File shipping is
+  SQLite's answer and has no Postgres counterpart until AL-8; `serve` refuses
+  that pairing at boot rather than reporting a green config that copies
+  nothing, so the compose file says so in prose and the test asserts the file
+  contains neither `destination` nor `litestream` — the absence is the
+  contract, not an oversight.
+- Health endpoints are documented where they actually live: `/healthz` on the
+  TLS RPC port proves the listener; `GET /health` (with backend) and `GET
+  /ready` (fails during schema creation) are on the console port. Container
+  health checks belong on `/ready`; if the checker cannot see the console
+  port, use `/healthz` and accept that it proves less.
+- Docs reposition the two single-node artifacts honestly. `spec/enterprise.md`
+  now states that v1's "one DB file" is the exception rather than the
+  deployment; the systemd unit header says the single-node unit is the
+  dev/offline/one-person shape and shows the one-line `Environment=
+  CRM_DATABASE_URL=…` (plus `After=network-online.target` for a remote
+  database, to stop crash-looping while the route comes up); the Dockerfile
+  leads with `docker compose up -d --build` and calls the file-backed
+  container "a supported shape, not the deployed one". The README's
+  marketing lines "No server. No Docker." describe local mode and were left
+  alone.
+- RED was 0 pass / 12 fail (no compose file, docs not yet pointing at it).
+  Four mutations of the finished stack each turned exactly one assertion red
+  (`cp` backup, sha verified after the run): image pin `postgres:16` →
+  `postgres:latest`; `condition: service_healthy` → `service_started`;
+  `CRM_DATABASE_URL` → an unrelated env var (proving the assertion is about
+  that contract, not about one line of YAML being missing); loopback console
+  binding dropped to `8580:8580`.
+- Two assertions were wrong in my own first draft: `src.indexOf('profiles')
+  < src.indexOf('mailpit')` can never hold (a service's own key precedes its
+  nested `profiles:`), and an assertion on `CRM_SMTP_*` env would have pinned
+  invalid configuration. Both replaced with shape assertions on the rendered
+  config and the profile-adjacent block.
+- The gate renders the compose file (`docker compose config`, exit 0, empty
+  stderr — hence no obsolete `version:` key) and never boots it. Booting a
+  database in the gate would make CI depend on Docker and on a multi-second
+  pull; the operator path stays manual, per the task's own step list.
+- Gate at commit: `bun test` 880 pass / 6 fail (the 6 are the known
+  `test/email.test.ts` sandbox baseline), 3716 expects, 886 tests / 77 files,
+  816s; `bun run check-types` clean; `bun run lint` clean.
 
 ---
 
