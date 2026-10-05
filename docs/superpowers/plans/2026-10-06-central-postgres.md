@@ -175,12 +175,19 @@ default) so both dialects get **identical** physical columns
 ### Task AL-1-2: `openDatabase(config)` — dual open path + config + pg test infra
 
 **Files:**
-- Create: `src/db/open.ts`, `test/enterprise/helpers/postgres.ts`,
+- Create: `src/db/seam.ts` (RawDB/CrmSeam/CrmDb — spike-verified shape,
+  AL-1-1 deferred it to the task that actually needs it),
+  `src/db/raw-sqlite.ts`, `src/db/raw-postgres.ts`, `src/db/open.ts`,
+  `test/enterprise/helpers/postgres.ts`,
   `test/enterprise/postgres-open.test.ts`
 - Modify: `src/config.ts` (`database: { path, backend?, url? }` +
   merge/env `CRM_DATABASE_URL`), `src/db.ts` (keep `openDB` for SQLite;
-  factor shared bits), `test/enterprise/helpers.ts` (`startServer`
-  postgres option)
+  attach `$crm` at the end of `openDbFresh`), `src/server/admin.ts`
+  (config view + sanitized TOML), `src/commands/serve.ts` (honest guard).
+  `test/enterprise/helpers.ts` (`startServer` postgres option) is
+  **deferred to AL-1-6**: serve cannot run on postgres until AL-1-5, so an
+  option that silently fell back to sqlite would only produce misleading
+  green.
 
 **Behavior:**
 
@@ -188,7 +195,8 @@ default) so both dialects get **identical** physical columns
   - `backend === 'sqlite'` (default) or `url` absent → today's
     `openDB(config.database.path)` path, **plus** `$crm` attachment
     (sqlite schema, libsql `RawDB` wrapper over the memoized client,
-    `busyExec` semantics preserved).
+    `busyExec` semantics preserved; attached once in `openDbFresh` so
+    every consumer of the memoized handle sees it).
   - `backend === 'postgres'` → `pg.Pool` (memoized by url like
     `openDbs` by path), drizzle node-postgres instance, open-time DDL
     `SCHEMA_SQL_PG` (hand-written mirror of `SCHEMA_SQL`: same tables;
@@ -197,12 +205,18 @@ default) so both dialects get **identical** physical columns
     in place of the `COLLATE NOCASE` one; no PRAGMAs).
   - Config validation: `backend = "postgres"` without `url` → boot
     error with the exact fix; `url` without `backend` → postgres
-    (a URL is unambiguous).
-- Existing `openDB` callers (`src/commands/serve.ts:77`,
-  `src/remote/dispatch.ts:385`, `src/lib/helpers.ts:61`,
-  `src/fuse-daemon.ts:1693`) switch to `openDatabase` where they
-  should accept both backends (serve + dispatch); local-only paths
-  (fuse daemon, lib/helpers local funnels) keep `openDB`.
+    (a URL is unambiguous); unknown `backend` value → boot error.
+- **Spike correction (2026-10-06, post-AL-1-1):** `serve.ts` /
+  `dispatch.ts` do NOT switch to `openDatabase` in this task. The whole
+  server stack (`startServer` → `handlers` → `registry` → 18 service
+  files, ~133 builder call sites) is anchored to the libsql `DB` type
+  and to the module-level `schema` import; a pg handle only type-checks
+  against a structural `CrmDb` once every `schema.X` is redirected to
+  `db.$crm.schema` — that mechanical pass is AL-1-5. serve-on-postgres
+  is therefore an explicit AL-1-6 acceptance item (the plan's original
+  ordering predates this spike finding). AL-1-2 delivers the dual open
+  path itself: both backends open, bootstrap, and are verifiably
+  correct (pg matrix + SQLite regression).
 - Config: `[database]` gains `backend` (`"sqlite"|"postgres"`) and
   `url`; env `CRM_DATABASE_URL`. `renderSanitizedToml` surfaces
   `url` as set/NOT SET (no credential echo) and a new `backend`
@@ -217,10 +231,42 @@ default) so both dialects get **identical** physical columns
 - [ ] RED (config): `backend="postgres"` without `url` → `serve`-style
   validation error; sanitized TOML never contains the url password.
 - [ ] GREEN: `openDatabase`, `SCHEMA_SQL_PG`, config additions,
-  `postgres.ts` helper + `startServer` extension.
+  `postgres.ts` helper. (`startServer` extension deferred to AL-1-6.)
 - [ ] Full SQLite matrix green; config tests green.
 - [ ] Mutation: drop one table from `SCHEMA_SQL_PG`; the parity-of-open
   test goes red; restore via `cp`.
+
+**As built (delivered 2026-10-05, 17 focused tests green, full matrix
+839 pass / 6 fail = email sandbox baseline):**
+
+- `SCHEMA_SQL_PG` is **generated from the AL-1-1 contract**
+  (`Object.values(TABLES)`) rather than hand-written — a hand mirror of
+  9 tables drifts the moment a column is added. Dialect-only parts are
+  explicit overrides: per-column FKs keyed by *physical* table name
+  (`tasks` also has a `company` column), the contacts partial unique
+  indexes, `search_index` as a regular table, and a best-effort
+  `idx_users_username_ci ON users (lower(username))`.
+- `audit_log.seq` must be `INTEGER GENERATED ALWAYS AS IDENTITY`. BIGINT
+  comes back from node-pg as a **string** (`"1"`), which would break the
+  drizzle integer type and every hash-chain arithmetic.
+- RawDB speaks **positional `?` + `unknown[]`**; node-pg 8.23.1 rejects
+  named parameters (`Query values must be an array`), so the pg wrapper
+  rewrites `?` → `$n` (skipping string-literal bodies).
+- The seam is mounted with `Object.assign(db, { $crm })`, never a spread
+  (drizzle builders live on the prototype; spreading drops them).
+- `openDatabase` is non-async and never throws synchronously: config
+  problems and unopenable databases both come back as `Promise.reject`.
+- `serve` gains an honest guard, not a silent fallback: backend=postgres
+  dies with "not wired in this build" until AL-1-6 removes it.
+- Two hardenments found by the tests themselves: the pg `Pool` needs an
+  `'error'` listener (without one, an idle-client death — DB restart,
+  firewall, `pg_terminate_backend` — is an uncaught exception that takes
+  the whole CRM server down), and `keepAlive: true` (NAT/LB idle drops
+  surface as "Connection terminated unexpectedly" on the next query).
+- Test infra: per-test database (`crm_t_<ulid>`), `pg_isready` must carry
+  `-d` (else it dials the nonexistent db named after the user), and a
+  stopped container is `docker start`ed rather than `rm -f` + recreated
+  (recreating wipes PGDATA and re-runs initdb every cold run).
 
 **Commit:** `db: openDatabase dual path + [database] backend/url + postgres test helper`
 

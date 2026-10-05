@@ -5,14 +5,25 @@ import { createClient } from '@libsql/client'
 import { sql } from 'drizzle-orm'
 import { drizzle } from 'drizzle-orm/libsql'
 
+import { sqliteRaw } from './db/raw-sqlite'
 import * as schema from './db/schema-sqlite'
+import type { CrmSeam } from './db/seam'
 import {
   buildCompanySearch,
   buildContactSearch,
   buildDealSearch,
 } from './lib/helpers'
 
-export type DB = ReturnType<typeof drizzle<typeof schema>>
+/**
+ * The sqlite handle, plus the `$crm` seam (AL-1-2).
+ *
+ * `DB` keeps naming the sqlite dialect on purpose: the query surface is still
+ * sqlite-shaped and only becomes dialect-neutral when the service layer stops
+ * importing `schema-sqlite` per file (AL-1-5). What the seam adds is the
+ * dialect tag, the raw escape hatch, and a `schema` pointer that redirect can
+ * target without touching this type again.
+ */
+export type DB = ReturnType<typeof drizzle<typeof schema>> & { $crm: CrmSeam }
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS contacts (
@@ -201,7 +212,15 @@ async function openDbFresh(dbPath: string): Promise<DB> {
   await migrateSchema(client)
   await ensureUsernameIndex(client)
 
-  return db
+  // Attach the seam (AL-1-2). Assigned in place, not spread: drizzle keeps
+  // query builders on the prototype, and a spread would drop them.
+  return Object.assign(db, {
+    $crm: {
+      dialect: 'sqlite',
+      raw: sqliteRaw(client),
+      schema: { ...schema },
+    } satisfies CrmSeam,
+  })
 }
 
 /**

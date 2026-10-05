@@ -66,7 +66,13 @@ export interface CRMConfig {
    * spec/client-repl.md, sub-project A). Code that needs a database either
    * guards with `NEEDS_DB` (host commands) or takes the remote path.
    */
-  database: { path: string | undefined }
+  database: {
+    /** 'sqlite' | 'postgres'; anything else is a boot-time error, not a fallback. */
+    backend?: string
+    path: string | undefined
+    /** Postgres connection url. A credential: never leaves the server. */
+    url?: string
+  }
   defaults: { format: string }
   hooks: Record<string, string>
   /**
@@ -172,8 +178,9 @@ function defaultConfig(): CRMConfig {
     backup: { destination: '' },
     activity: { types: ['note', 'call', 'meeting', 'email'] },
     // Deliberately no default path: an unset database is a fact that
-    // callers must handle, not something to paper over here.
-    database: { path: undefined },
+    // callers must handle, not something to paper over here. Same for
+    // backend — which server holds the data is never a silent default.
+    database: { backend: undefined, path: undefined, url: undefined },
     pipeline: {
       stages: [...DEFAULT_STAGES],
       won_stage: 'closed-won',
@@ -270,7 +277,7 @@ interface ConfigOverride {
     login_user_rate_per_minute?: number
   }
   backup?: { destination?: string }
-  database?: { path?: string }
+  database?: { backend?: string; path?: string; url?: string }
   defaults?: { format?: string }
   hooks?: Record<string, string>
   ldap?: {
@@ -323,8 +330,14 @@ function mergeConfig(base: CRMConfig, override: ConfigOverride): CRMConfig {
   // means something, and ignoring it silently is how a security knob
   // quietly stops meaning what it says.
   const given = <T>(v: T): v is NonNullable<T> => v !== undefined && v !== null
+  if (override.database?.backend) {
+    result.database = { ...result.database, backend: override.database.backend }
+  }
   if (override.database?.path) {
     result.database = { ...result.database, path: override.database.path }
+  }
+  if (override.database?.url) {
+    result.database = { ...result.database, url: override.database.url }
   }
   if (override.activity?.types) {
     result.activity = {
@@ -624,6 +637,14 @@ export function loadConfig(opts: {
     config.database.path = opts.dbPath
   } else if (process.env.CRM_DB) {
     config.database.path = process.env.CRM_DB
+  }
+
+  // A connection string in the environment is a deployment override, and it
+  // states the backend too: an operator pointing at postgres in a shell
+  // variable means postgres, whatever the checked-in file said.
+  if (process.env.CRM_DATABASE_URL) {
+    config.database.url = process.env.CRM_DATABASE_URL
+    config.database.backend = 'postgres'
   }
 
   // Format: --format flag > CRM_FORMAT env > config > default

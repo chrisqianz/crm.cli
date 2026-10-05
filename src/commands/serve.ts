@@ -2,6 +2,7 @@ import type { Command } from 'commander'
 
 import { loadConfig, projectAuthConfigWarning } from '../config'
 import { openDB } from '../db'
+import { resolveBackend } from '../db/open'
 import * as schema from '../db/schema-sqlite'
 import { die, gConfig, gDb } from '../lib/helpers'
 import { ldapWarnings, validateLdapConfig } from '../lib/ldap'
@@ -48,6 +49,16 @@ export function registerServeCommand(program: Command): void {
         adminHost?: string
       }) => {
         const config = loadConfig({ configPath: gConfig, dbPath: gDb })
+        // The query layer is still sqlite-anchored (every service builder is),
+        // so a postgres config here would either crash deep in a driver or
+        // quietly serve a file while the operator believes otherwise. Name the
+        // limit instead. This guard comes off when serve runs on postgres.
+        if (resolveBackend(config) === 'postgres') {
+          die(
+            'Error: serve on postgres is not wired in this build — set ' +
+              '[database] backend = "sqlite", or leave backend unset.',
+          )
+        }
         // A server hosts one named database, and nothing names it for you
         // any more: an operator who forgot --db/CRM_DB gets the fixed
         // message instead of a database silently created under $HOME.

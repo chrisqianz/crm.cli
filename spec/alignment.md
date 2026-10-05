@@ -119,8 +119,11 @@ config, docker compose stack, `/health` + `/ready`, `crm migrate export`
   content tsvector generated)`; the existing `findSemantic` JS scoring
   stays dialect-free; `searchFts` gets the `rawQuery` FTS path per
   dialect with the same LIKE fallback.
-- **Config**: `[serve] database = "sqlite"` (default, existing behavior
-  byte-identical) or `database = "postgres"` with `database_url`.
+- **Config**: `[database] backend = "sqlite"` (default, existing
+  behavior byte-identical; `path` unchanged) or
+  `backend = "postgres"` + `url` (also overridable via env
+  `CRM_DATABASE_URL`). A bare `url` without `backend` implies
+  postgres; `backend = "postgres"` without `url` is a boot error.
 - **Health**: `/health` (process alive) and `/ready` (configured DB
   reachable) on the admin port.
 - **Migration path**: `crm migrate export` reads the SQLite file and

@@ -18,6 +18,7 @@ import type { AddressInfo } from 'node:net'
 
 import type { CRMConfig } from '../config'
 import type { DB } from '../db'
+import { resolveBackend } from '../db/open'
 import { ServiceError } from '../lib/errors'
 import { consoleHtml } from './console'
 import {
@@ -271,7 +272,14 @@ function configView(ctx: Ctx): Record<string, unknown> {
       rpc_port: ctx.rpcPort,
       install_source: c.serve.install_source,
     },
-    database: { path: c.database.path },
+    database: {
+      path: c.database.path,
+      // Which server holds the data, and whether a url is configured — the url
+      // itself is a credential and never crosses the wire (`*_set` precedent:
+      // mail.password_set, ldap.bind_password_set).
+      backend: resolveBackend(c),
+      url_set: c.database.url !== undefined,
+    },
     backup: { destination: c.backup.destination },
     activity: { types: c.activity.types },
     pipeline: {
@@ -338,7 +346,7 @@ function ldapBindPasswordNote(ldap: CRMConfig['ldap']): string {
  * appears — secrets are environment variables on the DB host, and the
  * rendered text only reports whether the expected variable is set.
  */
-function renderSanitizedToml(c: CRMConfig): string {
+export function renderSanitizedToml(c: CRMConfig): string {
   const lines: string[] = [
     '# Effective crm.cli server configuration (sanitized — no secrets)',
     '# Changes take effect after a server restart.',
@@ -364,7 +372,7 @@ function renderSanitizedToml(c: CRMConfig): string {
     `# TLS: ${tlsNote}`,
     '',
     '[database]',
-    `path = "${c.database.path}"`,
+    ...databaseToml(c),
     '',
     '[auth]',
     `lockout_threshold = ${c.auth.lockout_threshold}`,
@@ -419,6 +427,44 @@ function renderSanitizedToml(c: CRMConfig): string {
     )
   }
   return `${lines.join('\n')}\n`
+}
+
+/**
+ * `[database]` lines for the sanitized render.
+ *
+ * An unconfigured section renders exactly what it did before backends existed
+ * — the copyable config stays what the operator would have written themselves.
+ * Postgres renders the backend plus a REDACTED url: the console is plain HTTP,
+ * so a connection string with a password in it is not display content.
+ */
+function databaseToml(c: CRMConfig): string[] {
+  if (resolveBackend(c) === 'postgres') {
+    return [
+      'backend = "postgres"',
+      `url = "${redactDatabaseUrl(c.database.url ?? '')}"`,
+    ]
+  }
+  return [`path = "${c.database.path}"`]
+}
+
+/**
+ * Drop the password from a connection url, keep everything that identifies
+ * WHICH server it is (user, host, port, database).
+ *
+ * A url that will not parse collapses to a constant: an operator pasting a
+ * console screenshot into a ticket must never be pasting a credential, and
+ * "we could not parse it" is not a license to echo the raw string.
+ */
+export function redactDatabaseUrl(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (parsed.password !== '') {
+      parsed.password = '***'
+    }
+    return parsed.toString()
+  } catch {
+    return '***'
+  }
 }
 
 /**
