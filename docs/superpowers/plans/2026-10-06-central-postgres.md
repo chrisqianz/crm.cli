@@ -928,8 +928,17 @@ follow-on commits):
   smoke read back a row written through `src/cli.ts` via
   `node dist/cli.js contact list --format json`.
 - **Release**: version stays on 0.4.x because AL-1 is additive; patch
-  bump at ship → `v0.4.1`, private distribution per ADR 007 (no npmjs
-  publish; `@dzhng/crm.cli` on npmjs is the upstream public line).
+  bump at ship → `v0.4.1` (`15cca3d release: bump to 0.4.1 (enterprise
+  edition)`), private distribution per ADR 007 (no npmjs publish;
+  `@dzhng/crm.cli` on npmjs is the upstream public line). `main`,
+  `enterprise/base` and the `v0.4.1` tag are all pushed and all point
+  at `15cca3d`. `node dist/cli.js -V` reports `0.4.1` under an
+  isolated `HOME`, which is what proves the `__PKG_VERSION__` define
+  picked up the new version rather than a stale bundle.
+- **Dist-smoke pitfall**: `DB=x HOME=y bun run src/cli.ts … --db "$DB"`
+  fails with `NOT_CONNECTED`, because a variable assignment prefix is
+  not visible to the command line that carries it, so `--db` received
+  an empty string. Both smoke commands need a literal `--db` path.
 
 ---
 
