@@ -23,6 +23,27 @@ const PEOPLE = `ou=people,${BASE}`
 const GROUPS = `ou=groups,${BASE}`
 
 /**
+ * Docker availability, probed synchronously at module load: `describe.skipIf`
+ * is evaluated during collection and cannot await. The in-test `docker info`
+ * check inside `ensureLdap` cannot cover a missing binary — bun throws
+ * `Executable not found in $PATH: "docker"` before any exit code exists, so a
+ * host without Docker used to report 11 failures instead of skipping. Unlike
+ * the postgres helper there is no external-URL escape hatch: this suite needs
+ * the container runtime itself.
+ */
+function dockerUsable(): boolean {
+  try {
+    return (
+      Bun.spawnSync(['docker', 'info'], { env: process.env }).exitCode === 0
+    )
+  } catch {
+    return false
+  }
+}
+
+const NO_DOCKER = !dockerUsable()
+
+/**
  * Directory-specific environment, scoped to this file on purpose: `crm
  * serve` refuses plain ldap:// without CRM_ALLOW_INSECURE_LDAP, and that
  * refusal is only assertable while the variable is absent elsewhere.
@@ -337,7 +358,7 @@ async function attemptLogin(
   }
 }
 
-describe('P6 LDAP: directory login', () => {
+describe.skipIf(NO_DOCKER)('P6 LDAP: directory login', () => {
   let ldap: LdapServer | null = null
   let starting: Promise<LdapServer> | null = null
 
