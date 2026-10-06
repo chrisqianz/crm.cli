@@ -858,25 +858,78 @@ it):
 ### Task AL-1-9: full matrix gate + release prep
 
 **Steps:**
-- [ ] Full suite, SQLite matrix: ≥ 814 pass, only the 6 email sandbox
+- [x] Full suite, SQLite matrix: ≥ 814 pass, only the 6 email sandbox
   reds.
-- [ ] Full suite incl. postgres tests (docker available here): all
+- [x] Full suite incl. postgres tests (docker available here): all
   postgres files green, no skips on this host.
-- [ ] `bunx tsc --noEmit` 0; `bun run lint` clean; `bun run build`
+- [x] `bunx tsc --noEmit` 0; `bun run lint` clean; `bun run build`
   clean; dist smoke (`node dist/cli.js contact list --format json`
   against a temp file db) clean.
-- [ ] Parity script `scripts/parity.ts` (dev tool, committed): runs a
+- [x] Parity script `scripts/parity.ts` (dev tool, committed): runs a
   representative RPC call set (login, contact CRUD+merge, company,
   deal move, task done, activity, search, audit list/verify, report
   funnel) against both backends on identical seed data and diffs the
   JSON outputs — must be empty except known-dialect notes (none
   expected). Run it; paste the "PARITY OK" line into the task report.
-- [ ] Version bump decision: keep `0.4.x` (AL-1 is additive) — bump
+- [x] Version bump decision: keep `0.4.x` (AL-1 is additive) — bump
   patch at ship, tag `v0.4.x` (private distribution, ADR 007: no
   npmjs).
-- [ ] Pi-Memory: ADR update + active-context rows.
+- [x] Pi-Memory: ADR update + active-context rows.
 
 **Commit:** `test: AL-1 gate green on both matrices (SQLite + postgres:16)`
+
+**As built** (`adf61e4`, parent `b682ace`; docs + release in the
+follow-on commits):
+
+- **Matrices** (each run twice against the same build to rule out a
+  lucky pass):
+  - postgres matrix, docker available: `880 pass / 6 fail / 0 skip /
+    3716 expects / 886 tests / 77 files / 866.60s`. Zero skips is the
+    assertion — `880 + 6 = 886` means bun skipped nothing, so all six
+    `test/enterprise/postgres-*.test.ts` files executed on this host.
+  - SQLite-only matrix: docker is removed from `PATH` rather than
+    stopped, so `postgresAvailable()` cannot see it at all (stopping
+    the container would still leave the binary discoverable). Result
+    `839 pass / 6 fail / 44 skip / 889 tests / 77 files / 777.45s`.
+  - Six reds in both runs are the same spec-allowed baseline:
+    `crm email send (local mode)` in `test/email.test.ts` — a bun
+    child process cannot reach a listener the parent process opened.
+- **Test-infra fix required before criterion 1 was reachable.**
+  `test/enterprise/ldap.test.ts` now gates `P6 LDAP: directory login`
+  on a synchronous `dockerUsable()` probe. A host without docker used
+  to take 11 hard failures (`error: Executable not found in $PATH:
+  "docker"`) because bun's `spawnSync` throws ENOENT instead of
+  returning a non-zero exit code, which made the pre-existing
+  `info.exitCode !== 0` skip branch dead code. Synchronous at module
+  load because `describe.skipIf` is evaluated during collection. It
+  deliberately does *not* honor `CRM_TEST_PG_URL`: an external pg URL
+  says nothing about whether docker exists, and that variable already
+  forces the postgres suites to run.
+- **Parity**: `scripts/parity.ts` replays one fixed 38-step scenario
+  over the real RPC protocol against two throwaway databases — a
+  sqlite file and a `crm_t_*` postgres database — logs in once per
+  backend (`auth.login` is rate-limited to 15/min by default), mints
+  label→id aliases as data arrives so server-generated ids compare by
+  label instead of being discarded, and diffs normalized JSON. Output:
+  `PARITY OK: 38 steps identical across sqlite and postgres`. Mutation
+  reverse-check: dropping `created_at` from `DROP_KEYS` turns it red
+  with `PARITY FAIL: 24 differing value(s)` and exit 1, proving the
+  walk/diff/exit-code chain is live; weakening the id pattern changed
+  nothing, which is the expected proof that ids are matched by the
+  alias table, not by a regex.
+- **`tsconfig.json` now includes `scripts/`.** Without it
+  `bun run check-types` silently skipped the parity script — a green
+  type gate over a file it never read.
+- **Static and build**: type gate 0 errors (`bun run check-types`; the
+  step's `bunx tsc --noEmit` resolves to the wrong binary in this
+  repo), `ultracite check` clean on the three changed files, build
+  clean at `Bundled 123 modules in 45ms`, `cli.js 0.75 MB` (0.55 MB at
+  v0.4.0 — the pg driver plus the second schema dialect), and the dist
+  smoke read back a row written through `src/cli.ts` via
+  `node dist/cli.js contact list --format json`.
+- **Release**: version stays on 0.4.x because AL-1 is additive; patch
+  bump at ship → `v0.4.1`, private distribution per ADR 007 (no npmjs
+  publish; `@dzhng/crm.cli` on npmjs is the upstream public line).
 
 ---
 
@@ -890,7 +943,10 @@ it):
   schema work).
 - pg backup tooling (`pg_dump` wrapper, WAL archiving) — AL-8; until
   then litestream replication is sqlite-only and `serve` says so.
-- `crm --version` global flag (known upstream gap, separate fix).
+- `crm --version` global flag — not a gap. `--version` is the
+  optimistic-locking argument of `contact/company/deal edit` and
+  `deal move` (`src/cli.ts:60-69`); the CLI reports its own version
+  through `-V`. Adding a global `--version` would collide.
 
 ## Rollout order summary
 
